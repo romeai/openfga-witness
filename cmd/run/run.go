@@ -428,6 +428,7 @@ type ServerContext struct {
 	Logger                  logger.Logger
 	ExtraUnaryInterceptors  []grpc.UnaryServerInterceptor
 	ExtraStreamInterceptors []grpc.StreamServerInterceptor
+	OnShutdown              func(ctx context.Context) // called after gRPC GracefulStop, before process exit
 }
 
 func convertStringArrayToUintArray(stringArray []string) []uint {
@@ -1118,7 +1119,25 @@ func (s *ServerContext) Run(ctx context.Context, config *serverconfig.Config) er
 		}
 	}
 
-	grpcServer.GracefulStop()
+	// GracefulStop waits for in-flight RPCs but has no timeout.
+	// If a streaming RPC hangs, fall back to hard Stop after the deadline.
+	gracefulDone := make(chan struct{})
+	go func() {
+		grpcServer.GracefulStop()
+		close(gracefulDone)
+	}()
+	select {
+	case <-gracefulDone:
+		s.Logger.Info("gRPC server shut down.")
+	case <-ctx.Done():
+		s.Logger.Warn("gRPC GracefulStop timed out, forcing stop")
+		grpcServer.Stop()
+	}
+
+	// Flush audit sinks after all in-flight RPCs have finished emitting events.
+	if s.OnShutdown != nil {
+		s.OnShutdown(ctx)
+	}
 
 	svr.Close()
 
