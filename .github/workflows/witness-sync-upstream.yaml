@@ -1,0 +1,133 @@
+name: Sync with upstream OpenFGA
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'  # Weekly on Monday at 6am UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout witness branch
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: witness
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/openfga/openfga.git
+          git fetch upstream main --tags
+
+      - name: Check if rebase needed
+        id: check
+        run: |
+          UPSTREAM_HEAD=$(git rev-parse upstream/main)
+          # Check if upstream/main is already an ancestor of HEAD
+          if git merge-base --is-ancestor "$UPSTREAM_HEAD" HEAD; then
+            echo "up_to_date=true" >> "$GITHUB_OUTPUT"
+            echo "Already up to date with upstream"
+          else
+            echo "up_to_date=false" >> "$GITHUB_OUTPUT"
+            echo "Upstream has new commits, rebasing..."
+          fi
+
+      - name: Rebase witness onto upstream/main
+        id: rebase
+        if: steps.check.outputs.up_to_date == 'false'
+        run: |
+          if git rebase upstream/main; then
+            echo "status=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failure" >> "$GITHUB_OUTPUT"
+            git rebase --abort
+          fi
+
+      - name: Set up Go
+        if: steps.rebase.outputs.status == 'success'
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: './go.mod'
+          cache-dependency-path: './go.sum'
+
+      - name: Run witness tests
+        id: tests
+        if: steps.rebase.outputs.status == 'success'
+        run: |
+          go test ./witness/... -timeout 120s -count=1
+          go test ./witness_tests/ -timeout 600s -count=1
+
+      - name: Push rebased branch
+        if: steps.rebase.outputs.status == 'success'
+        run: git push --force-with-lease origin witness
+
+      - name: Push new upstream tags
+        if: steps.rebase.outputs.status == 'success' || steps.check.outputs.up_to_date == 'true'
+        run: |
+          # Only push tags that don't already exist in origin
+          for tag in $(git tag -l 'v*' --sort=-version:refname | head -20); do
+            if ! git ls-remote --tags origin "refs/tags/$tag" | grep -q "$tag"; then
+              echo "Pushing new tag: $tag"
+              git push origin "$tag"
+            fi
+          done
+
+      - name: Open issue on rebase failure
+        if: steps.rebase.outputs.status == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Check for existing open issue to avoid duplicates
+          EXISTING=$(gh issue list --label "rebase-conflict" --state open --json number -q '.[0].number')
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --body "Rebase still failing as of $(date -u +%Y-%m-%dT%H:%M:%SZ). Manual intervention required."
+          else
+            gh issue create \
+              --title "Upstream rebase failed — manual intervention required" \
+              --label "rebase-conflict" \
+              --body "$(cat <<'BODY'
+          ## Upstream Sync Failed
+
+          The automated rebase of the \`witness\` branch onto \`upstream/main\` failed on $(date -u +%Y-%m-%dT%H:%M:%SZ).
+
+          This typically means \`cmd/run/run.go\` (our only upstream-modified file) has changed in a way that conflicts with the interceptor hook.
+
+          ### To fix manually:
+          \`\`\`bash
+          git fetch upstream main
+          git checkout witness
+          git rebase upstream/main
+          # Resolve conflicts in cmd/run/run.go
+          # Re-apply the ExtraUnaryInterceptors/ExtraStreamInterceptors fields
+          # and the RunWithContext() function
+          git rebase --continue
+          go test ./witness/... ./witness_tests/ -timeout 600s
+          git push --force-with-lease origin witness
+          \`\`\`
+
+          Close this issue once the rebase is resolved.
+          BODY
+          )"
+          fi
+
+      - name: Open issue on test failure
+        if: steps.rebase.outputs.status == 'success' && failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create \
+            --title "Witness tests failing after upstream rebase" \
+            --label "test-failure" \
+            --body "Tests failed after rebasing witness onto upstream/main on $(date -u +%Y-%m-%dT%H:%M:%SZ). Check the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details."
