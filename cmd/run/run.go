@@ -403,8 +403,31 @@ func run(_ *cobra.Command, _ []string) {
 	}
 }
 
+// RunWithContext returns a cobra Run handler that uses the provided ServerContext.
+// This allows callers to pre-configure ExtraUnaryInterceptors/ExtraStreamInterceptors
+// before the server starts. If serverCtx.Logger is nil, it is initialized from config.
+func RunWithContext(serverCtx *ServerContext) func(*cobra.Command, []string) {
+	return func(_ *cobra.Command, _ []string) {
+		config, err := ReadConfig()
+		if err != nil {
+			panic(err)
+		}
+		if err := config.Verify(); err != nil {
+			panic(err)
+		}
+		if serverCtx.Logger == nil {
+			serverCtx.Logger = logger.MustNewLogger(config.Log.Format, config.Log.Level, config.Log.TimestampFormat)
+		}
+		if err := serverCtx.Run(context.Background(), config); err != nil {
+			panic(err)
+		}
+	}
+}
+
 type ServerContext struct {
-	Logger logger.Logger
+	Logger                  logger.Logger
+	ExtraUnaryInterceptors  []grpc.UnaryServerInterceptor
+	ExtraStreamInterceptors []grpc.StreamServerInterceptor
 }
 
 func convertStringArrayToUintArray(stringArray []string) []uint {
@@ -642,6 +665,13 @@ func (s *ServerContext) buildServerOpts(ctx context.Context, config *serverconfi
 	} else {
 		s.Logger.Warn("gRPC TLS is disabled, serving connections using insecure plaintext")
 	}
+	if len(s.ExtraUnaryInterceptors) > 0 {
+		serverOpts = append(serverOpts, grpc.ChainUnaryInterceptor(s.ExtraUnaryInterceptors...))
+	}
+	if len(s.ExtraStreamInterceptors) > 0 {
+		serverOpts = append(serverOpts, grpc.ChainStreamInterceptor(s.ExtraStreamInterceptors...))
+	}
+
 	return serverOpts, prometheusMetrics, nil
 }
 
