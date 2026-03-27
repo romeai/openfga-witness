@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 
@@ -51,6 +52,11 @@ func newWitnessRunCommand() *cobra.Command {
 		serverCtx := &run.ServerContext{
 			ExtraUnaryInterceptors:  []grpc.UnaryServerInterceptor{interceptor.AuditUnary(auditSink)},
 			ExtraStreamInterceptors: []grpc.StreamServerInterceptor{interceptor.AuditStream(auditSink)},
+			OnShutdown: func(ctx context.Context) {
+				if err := auditSink.Close(ctx); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: audit sink close: %v\n", err)
+				}
+			},
 		}
 		// RunWithContext reads config, initializes Logger if nil, and calls serverCtx.Run()
 		run.RunWithContext(serverCtx)(c, args)

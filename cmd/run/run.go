@@ -444,6 +444,7 @@ type ServerContext struct {
 	Logger                  logger.Logger
 	ExtraUnaryInterceptors  []grpc.UnaryServerInterceptor
 	ExtraStreamInterceptors []grpc.StreamServerInterceptor
+	OnShutdown              func(ctx context.Context) // called after gRPC GracefulStop, before process exit
 }
 
 func convertStringArrayToUintArray(stringArray []string) []uint {
@@ -1137,6 +1138,16 @@ func (s *ServerContext) Run(ctx context.Context, config *serverconfig.Config) er
 	)
 
 	cleanups.PushFront(cleanupFromPlainFunc(svr.Close, "server"))
+
+	// Flush audit sinks after the gRPC server has stopped (so all in-flight
+	// RPCs have finished emitting events). Registered before the grpcServer
+	// cleanup so it runs after it (PushFront → reverse iteration order).
+	if s.OnShutdown != nil {
+		cleanups.PushFront(cleanup(func(ctx context.Context) error {
+			s.OnShutdown(ctx)
+			return nil
+		}))
+	}
 
 	s.Logger.Info(
 		"starting openfga service...",
