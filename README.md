@@ -41,12 +41,13 @@ Check and BatchCheck events include the authorization decision (Allowed/Denied) 
 
 ### Pluggable Sinks
 
-Audit events are emitted to a pluggable `AuditSink` interface. Two production sinks are included:
+Audit events are emitted to a pluggable `AuditSink` interface. Three production sinks are included:
 
 | Sink | Transport | Use Case |
 |---|---|---|
 | **stdout** (default) | JSON lines to stdout | Development, log aggregators, `kubectl logs` pipelines |
 | **firehose** | AWS Data Firehose `PutRecordBatch` | AWS Security Lake (Firehose → Parquet → S3 → Security Lake) |
+| **kafka** | Apache Kafka via `segmentio/kafka-go` | Event streaming, SIEM ingestion, real-time analytics pipelines |
 
 A `MemorySink` is also available for testing.
 
@@ -80,13 +81,25 @@ Configuration uses OpenFGA's existing viper/cobra system. All standard OpenFGA f
 
 | Flag | Env Var | Default | Description |
 |---|---|---|---|
-| `--audit-sink` | `OPENFGA_AUDIT_SINK` | `stdout` | Sink type: `stdout` or `firehose` |
+| `--audit-sink` | `OPENFGA_AUDIT_SINK` | `stdout` | Sink type: `stdout`, `firehose`, or `kafka` |
 | `--audit-firehose-stream-name` | `OPENFGA_AUDIT_FIREHOSE_STREAMNAME` | — | Firehose delivery stream name |
 | `--audit-firehose-batch-size` | `OPENFGA_AUDIT_FIREHOSE_BATCHSIZE` | `500` | Records per `PutRecordBatch` call (max 500) |
 | `--audit-firehose-flush-interval` | `OPENFGA_AUDIT_FIREHOSE_FLUSHINTERVAL` | `5s` | Max time before flushing a partial batch |
 | `--audit-firehose-region` | `OPENFGA_AUDIT_FIREHOSE_REGION` | SDK default | AWS region for Firehose |
+| `--audit-kafka-brokers` | `OPENFGA_AUDIT_KAFKA_BROKERS` | — | Comma-separated broker addresses (required) |
+| `--audit-kafka-topic` | `OPENFGA_AUDIT_KAFKA_TOPIC` | — | Kafka topic (required) |
+| `--audit-kafka-tls` | `OPENFGA_AUDIT_KAFKA_TLS` | `false` | Enable TLS |
+| `--audit-kafka-sasl-mechanism` | `OPENFGA_AUDIT_KAFKA_SASLMECHANISM` | — | SASL mechanism: `PLAIN`, `SCRAM-SHA-256`, `SCRAM-SHA-512` |
+| `--audit-kafka-sasl-username` | `OPENFGA_AUDIT_KAFKA_SASLUSERNAME` | — | SASL username |
+| `--audit-kafka-sasl-password` | `OPENFGA_AUDIT_KAFKA_SASLPASSWORD` | — | SASL password (prefer env var) |
+| `--audit-kafka-compression` | `OPENFGA_AUDIT_KAFKA_COMPRESSION` | — | Compression: `snappy`, `gzip`, `lz4`, `zstd` |
+| `--audit-kafka-balancer` | `OPENFGA_AUDIT_KAFKA_BALANCER` | `round-robin` | Balancer: `round-robin`, `least-bytes`, `hash` |
+| `--audit-kafka-required-acks` | `OPENFGA_AUDIT_KAFKA_REQUIREDACKS` | `all` | Required acks: `none`, `one`, `all` |
+| `--audit-kafka-write-timeout` | `OPENFGA_AUDIT_KAFKA_WRITETIMEOUT` | `30s` | Write timeout |
 
 ### Config File
+
+Firehose example:
 
 ```yaml
 audit:
@@ -99,6 +112,26 @@ audit:
 ```
 
 AWS credentials use the standard SDK credential chain (env vars, instance profile, ECS task role).
+
+Kafka example:
+
+```yaml
+audit:
+  sink: kafka
+  kafka:
+    brokers: broker-1:9092,broker-2:9092,broker-3:9092
+    topic: openfga-audit
+    tls: true
+    saslMechanism: SCRAM-SHA-512
+    saslUsername: openfga
+    saslPassword: ${KAFKA_PASSWORD}
+    compression: snappy
+    balancer: round-robin
+    requiredAcks: all
+    writeTimeout: 30s
+```
+
+The Kafka sink uses `segmentio/kafka-go` (pure Go, no CGo). Messages are keyed by `Actor.User.UID` for per-caller partition ordering. Events are serialized as JSON. The library handles internal batching, retries, and partitioning. Graceful shutdown flushes buffered messages.
 
 ## Metrics
 
@@ -128,7 +161,7 @@ Conformance is verified by running OpenFGA's full matrix test suite (~12,500 lin
 ├── witness/                    Our code (cleanly separated)
 │   ├── ocsf/                   OCSF API Activity 6003 structs + builders
 │   ├── interceptor/            gRPC audit interceptors
-│   ├── sink/                   AuditSink interface + implementations
+│   ├── sink/                   AuditSink interface + implementations (stdout, Firehose, Kafka)
 │   ├── config/                 Audit config (viper/cobra bindings)
 │   └── metrics/                Prometheus counters
 ├── witness_tests/              Integration + conformance tests

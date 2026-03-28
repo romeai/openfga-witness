@@ -1,4 +1,4 @@
-package witness_tests
+package witnesstests
 
 import (
 	"context"
@@ -76,7 +76,7 @@ func TestIntegration_CheckEmitsAuditEvent(t *testing.T) {
 
 	var checkEvents []ocsf.APIActivityEvent
 	for _, e := range ms.Events() {
-		if e.Api.Operation == "Check" {
+		if e.API.Operation == "Check" {
 			checkEvents = append(checkEvents, e)
 		}
 	}
@@ -130,7 +130,7 @@ func TestIntegration_WriteEmitsAuditEvent(t *testing.T) {
 
 	var writeEvents []ocsf.APIActivityEvent
 	for _, e := range ms.Events() {
-		if e.Api.Operation == "Write" {
+		if e.API.Operation == "Write" {
 			writeEvents = append(writeEvents, e)
 		}
 	}
@@ -177,7 +177,7 @@ func TestIntegration_CheckDeniedEmitsAuditEvent(t *testing.T) {
 
 	var checkEvents []ocsf.APIActivityEvent
 	for _, e := range ms.Events() {
-		if e.Api.Operation == "Check" {
+		if e.API.Operation == "Check" {
 			checkEvents = append(checkEvents, e)
 		}
 	}
@@ -210,7 +210,7 @@ func TestIntegration_CreateStoreEmitsGenericEvent(t *testing.T) {
 
 	var createEvents []ocsf.APIActivityEvent
 	for _, e := range ms.Events() {
-		if e.Api.Operation == "CreateStore" {
+		if e.API.Operation == "CreateStore" {
 			createEvents = append(createEvents, e)
 		}
 	}

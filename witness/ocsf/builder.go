@@ -9,11 +9,12 @@ import (
 	"time"
 
 	grpc_ctxtags "github.com/grpc-ecosystem/go-grpc-middleware/tags"
+	"google.golang.org/grpc/peer"
+	"google.golang.org/grpc/status"
+
 	openfgav1 "github.com/openfga/api/proto/openfga/v1"
 
 	"github.com/openfga/openfga/pkg/authclaims"
-	"google.golang.org/grpc/peer"
-	"google.golang.org/grpc/status"
 )
 
 const (
@@ -41,7 +42,7 @@ func baseEvent(ctx context.Context, start time.Time, operation string, activityI
 			Version: ocsfVersion,
 			Product: Product{Name: productName, VendorName: vendorName},
 		},
-		Api: Api{
+		API: API{
 			Operation: operation,
 			Service:   ServiceInfo{Name: serviceName},
 			Version:   "v1",
