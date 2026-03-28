@@ -12,7 +12,6 @@ import (
 	"github.com/openfga/openfga/cmd/migrate"
 	"github.com/openfga/openfga/cmd/run"
 	"github.com/openfga/openfga/cmd/validatemodels"
-
 	witnessconfig "github.com/openfga/openfga/witness/config"
 	"github.com/openfga/openfga/witness/interceptor"
 	"github.com/openfga/openfga/witness/sink"
@@ -71,6 +70,8 @@ func createSink(cfg witnessconfig.AuditConfig) (sink.AuditSink, error) {
 		return sink.NewStdoutSink(os.Stdout), nil
 	case "firehose":
 		return sink.NewFirehoseSink(cfg.Firehose)
+	case "kafka":
+		return sink.NewKafkaSink(cfg.Kafka)
 	default:
 		return nil, fmt.Errorf("unknown audit sink: %s", cfg.Sink)
 	}

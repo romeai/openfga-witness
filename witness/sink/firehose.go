@@ -44,12 +44,12 @@ type FirehoseSink struct {
 	batchSize     int
 	flushInterval time.Duration
 
-	mu       sync.Mutex
-	buffer   []json.RawMessage
-	done     chan struct{}
-	closed   atomic.Bool
+	mu        sync.Mutex
+	buffer    []json.RawMessage
+	done      chan struct{}
+	closed    atomic.Bool
 	closeOnce sync.Once
-	loopDone chan struct{} // signals that flushLoop has exited
+	loopDone  chan struct{} // signals that flushLoop has exited
 }
 
 func NewFirehoseSink(cfg witnessconfig.FirehoseConfig) (*FirehoseSink, error) {

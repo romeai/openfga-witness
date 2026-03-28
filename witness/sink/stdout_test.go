@@ -19,7 +19,7 @@ func TestStdoutSink_EmitsJSONLine(t *testing.T) {
 		ClassUID:    ocsf.ClassUIDAPIActivity,
 		CategoryUID: ocsf.CategoryUIDApplication,
 		ActivityID:  ocsf.ActivityIDRead,
-		Api:         ocsf.Api{Operation: "Check"},
+		API:         ocsf.API{Operation: "Check"},
 		Duration:    42,
 	}
 
@@ -34,8 +34,8 @@ func TestStdoutSink_EmitsJSONLine(t *testing.T) {
 	if decoded.ClassUID != ocsf.ClassUIDAPIActivity {
 		t.Fatalf("expected class_uid %d, got %d", ocsf.ClassUIDAPIActivity, decoded.ClassUID)
 	}
-	if decoded.Api.Operation != "Check" {
-		t.Fatalf("expected operation Check, got %s", decoded.Api.Operation)
+	if decoded.API.Operation != "Check" {
+		t.Fatalf("expected operation Check, got %s", decoded.API.Operation)
 	}
 }
 
