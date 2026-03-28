@@ -6,8 +6,9 @@ import (
 	"testing"
 	"time"
 
-	openfgav1 "github.com/openfga/api/proto/openfga/v1"
 	"google.golang.org/grpc/peer"
+
+	openfgav1 "github.com/openfga/api/proto/openfga/v1"
 
 	"github.com/openfga/openfga/witness/ocsf"
 )
@@ -40,8 +41,8 @@ func TestBuildCheckEvent_Allowed(t *testing.T) {
 	if event.TypeName != "API Activity: Read" {
 		t.Fatalf("expected type_name 'API Activity: Read', got %s", event.TypeName)
 	}
-	if event.Api.Operation != "Check" {
-		t.Fatalf("expected operation Check, got %s", event.Api.Operation)
+	if event.API.Operation != "Check" {
+		t.Fatalf("expected operation Check, got %s", event.API.Operation)
 	}
 	if event.StatusID != ocsf.StatusIDSuccess {
 		t.Fatalf("expected status_id %d, got %d", ocsf.StatusIDSuccess, event.StatusID)
@@ -106,8 +107,8 @@ func TestBuildGenericEvent(t *testing.T) {
 	if event.ActivityID != ocsf.ActivityIDOther {
 		t.Fatalf("expected activity_id %d, got %d", ocsf.ActivityIDOther, event.ActivityID)
 	}
-	if event.Api.Operation != "WriteAuthorizationModel" {
-		t.Fatalf("expected operation WriteAuthorizationModel, got %s", event.Api.Operation)
+	if event.API.Operation != "WriteAuthorizationModel" {
+		t.Fatalf("expected operation WriteAuthorizationModel, got %s", event.API.Operation)
 	}
 	if event.TypeName != "API Activity: Other" {
 		t.Fatalf("expected type_name 'API Activity: Other', got %s", event.TypeName)
@@ -195,8 +196,8 @@ func TestBuildListObjectsEvent(t *testing.T) {
 
 	event := ocsf.BuildListObjectsEvent(ctx, start, req, resp, nil, 20*time.Millisecond)
 
-	if event.Api.Operation != "ListObjects" {
-		t.Fatalf("expected operation ListObjects, got %s", event.Api.Operation)
+	if event.API.Operation != "ListObjects" {
+		t.Fatalf("expected operation ListObjects, got %s", event.API.Operation)
 	}
 	if event.Resources[0].Data["user"] != "user:anne" {
 		t.Fatalf("expected user:anne, got %v", event.Resources[0].Data["user"])
@@ -222,8 +223,8 @@ func TestBuildListUsersEvent(t *testing.T) {
 
 	event := ocsf.BuildListUsersEvent(ctx, start, req, resp, nil, 15*time.Millisecond)
 
-	if event.Api.Operation != "ListUsers" {
-		t.Fatalf("expected operation ListUsers, got %s", event.Api.Operation)
+	if event.API.Operation != "ListUsers" {
+		t.Fatalf("expected operation ListUsers, got %s", event.API.Operation)
 	}
 	if event.Resources[0].Name != "document:budget" {
 		t.Fatalf("expected document:budget, got %s", event.Resources[0].Name)
@@ -258,8 +259,8 @@ func TestBuildBatchCheckEvent(t *testing.T) {
 
 	event := ocsf.BuildBatchCheckEvent(ctx, start, req, resp, nil, 25*time.Millisecond)
 
-	if event.Api.Operation != "BatchCheck" {
-		t.Fatalf("expected operation BatchCheck, got %s", event.Api.Operation)
+	if event.API.Operation != "BatchCheck" {
+		t.Fatalf("expected operation BatchCheck, got %s", event.API.Operation)
 	}
 	if len(event.Resources) != 2 {
 		t.Fatalf("expected 2 resources, got %d", len(event.Resources))
@@ -281,8 +282,8 @@ func TestBuildReadEvent(t *testing.T) {
 
 	event := ocsf.BuildReadEvent(ctx, start, req, nil, 8*time.Millisecond)
 
-	if event.Api.Operation != "Read" {
-		t.Fatalf("expected operation Read, got %s", event.Api.Operation)
+	if event.API.Operation != "Read" {
+		t.Fatalf("expected operation Read, got %s", event.API.Operation)
 	}
 	if event.Resources[0].Data["user"] != "user:anne" {
 		t.Fatalf("expected user:anne, got %v", event.Resources[0].Data["user"])

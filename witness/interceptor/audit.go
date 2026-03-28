@@ -4,8 +4,9 @@ import (
 	"context"
 	"time"
 
-	openfgav1 "github.com/openfga/api/proto/openfga/v1"
 	"google.golang.org/grpc"
+
+	openfgav1 "github.com/openfga/api/proto/openfga/v1"
 
 	"github.com/openfga/openfga/witness/metrics"
 	"github.com/openfga/openfga/witness/ocsf"
@@ -51,7 +52,7 @@ func AuditUnary(s sink.AuditSink) grpc.UnaryServerInterceptor {
 		if err != nil {
 			emitStatus = "failure"
 		}
-		metrics.AuditEventsTotal.WithLabelValues(event.Api.Operation, emitStatus).Inc()
+		metrics.AuditEventsTotal.WithLabelValues(event.API.Operation, emitStatus).Inc()
 
 		if emitErr := s.Emit(ctx, event); emitErr != nil {
 			metrics.AuditEventsDropped.Inc()
@@ -80,7 +81,7 @@ func AuditStream(s sink.AuditSink) grpc.StreamServerInterceptor {
 		if err != nil {
 			emitStatus = "failure"
 		}
-		metrics.AuditEventsTotal.WithLabelValues(event.Api.Operation, emitStatus).Inc()
+		metrics.AuditEventsTotal.WithLabelValues(event.API.Operation, emitStatus).Inc()
 
 		if emitErr := s.Emit(stream.Context(), event); emitErr != nil {
 			metrics.AuditEventsDropped.Inc()

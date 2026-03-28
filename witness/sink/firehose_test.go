@@ -52,7 +52,7 @@ func TestFirehoseSink_FlushOnBatchSize(t *testing.T) {
 	mock := newMockFirehoseClient()
 	s := sink.NewFirehoseSinkWithClient(mock, 2, 10*time.Second)
 	ctx := context.Background()
-	event := ocsf.APIActivityEvent{ClassUID: ocsf.ClassUIDAPIActivity, Api: ocsf.Api{Operation: "Check"}}
+	event := ocsf.APIActivityEvent{ClassUID: ocsf.ClassUIDAPIActivity, API: ocsf.API{Operation: "Check"}}
 
 	_ = s.Emit(ctx, event)
 	if mock.BatchCount() != 0 {

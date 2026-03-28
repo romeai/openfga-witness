@@ -22,30 +22,30 @@ const (
 )
 
 type APIActivityEvent struct {
-	ClassUID       int              `json:"class_uid"`
-	CategoryUID    int              `json:"category_uid"`
-	ActivityID     int              `json:"activity_id"`
-	ActivityName   string           `json:"activity_name"`
-	TypeUID        int              `json:"type_uid"`
-	TypeName       string           `json:"type_name"`
-	Time           int64            `json:"time"`
-	SeverityID     int              `json:"severity_id"`
-	Severity       string           `json:"severity"`
-	StatusID       int              `json:"status_id"`
-	Status         string           `json:"status"`
-	StatusCode     string           `json:"status_code,omitempty"`
-	StatusDetail   string           `json:"status_detail,omitempty"`
-	Message        string           `json:"message,omitempty"`
-	Duration       int64            `json:"duration"`
-	Metadata       Metadata         `json:"metadata"`
-	Actor          Actor            `json:"actor"`
-	Api            Api              `json:"api"`
-	SrcEndpoint    SrcEndpoint      `json:"src_endpoint"`
-	Resources      []Resource       `json:"resources,omitempty"`
-	Authorizations []Authorization  `json:"authorizations,omitempty"`
-	DispositionID  *int             `json:"disposition_id,omitempty"`
-	Disposition    string           `json:"disposition,omitempty"`
-	Unmapped       map[string]any   `json:"unmapped,omitempty"`
+	ClassUID       int             `json:"class_uid"`
+	CategoryUID    int             `json:"category_uid"`
+	ActivityID     int             `json:"activity_id"`
+	ActivityName   string          `json:"activity_name"`
+	TypeUID        int             `json:"type_uid"`
+	TypeName       string          `json:"type_name"`
+	Time           int64           `json:"time"`
+	SeverityID     int             `json:"severity_id"`
+	Severity       string          `json:"severity"`
+	StatusID       int             `json:"status_id"`
+	Status         string          `json:"status"`
+	StatusCode     string          `json:"status_code,omitempty"`
+	StatusDetail   string          `json:"status_detail,omitempty"`
+	Message        string          `json:"message,omitempty"`
+	Duration       int64           `json:"duration"`
+	Metadata       Metadata        `json:"metadata"`
+	Actor          Actor           `json:"actor"`
+	API            API             `json:"api"`
+	SrcEndpoint    SrcEndpoint     `json:"src_endpoint"`
+	Resources      []Resource      `json:"resources,omitempty"`
+	Authorizations []Authorization `json:"authorizations,omitempty"`
+	DispositionID  *int            `json:"disposition_id,omitempty"`
+	Disposition    string          `json:"disposition,omitempty"`
+	Unmapped       map[string]any  `json:"unmapped,omitempty"`
 }
 
 type Metadata struct {
@@ -72,7 +72,7 @@ type ActorUser struct {
 	Type   string `json:"type,omitempty"`
 }
 
-type Api struct {
+type API struct {
 	Operation string      `json:"operation"`
 	Service   ServiceInfo `json:"service"`
 	Version   string      `json:"version,omitempty"`

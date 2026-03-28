@@ -1,4 +1,4 @@
-package witness_tests
+package witnesstests
 
 import (
 	"testing"

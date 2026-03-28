@@ -15,7 +15,7 @@ func TestMemorySink_EmitCollectsEvents(t *testing.T) {
 	event := ocsf.APIActivityEvent{
 		ClassUID:   ocsf.ClassUIDAPIActivity,
 		ActivityID: ocsf.ActivityIDRead,
-		Api:        ocsf.Api{Operation: "Check"},
+		API:        ocsf.API{Operation: "Check"},
 	}
 
 	if err := s.Emit(ctx, event); err != nil {
@@ -26,8 +26,8 @@ func TestMemorySink_EmitCollectsEvents(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
-	if events[0].Api.Operation != "Check" {
-		t.Fatalf("expected operation Check, got %s", events[0].Api.Operation)
+	if events[0].API.Operation != "Check" {
+		t.Fatalf("expected operation Check, got %s", events[0].API.Operation)
 	}
 }
 

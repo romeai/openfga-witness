@@ -4,8 +4,9 @@ import (
 	"context"
 	"testing"
 
-	openfgav1 "github.com/openfga/api/proto/openfga/v1"
 	"google.golang.org/grpc"
+
+	openfgav1 "github.com/openfga/api/proto/openfga/v1"
 
 	"github.com/openfga/openfga/witness/interceptor"
 	"github.com/openfga/openfga/witness/ocsf"
@@ -41,8 +42,8 @@ func TestAuditUnary_Check(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("expected 1 audit event, got %d", len(events))
 	}
-	if events[0].Api.Operation != "Check" {
-		t.Fatalf("expected operation Check, got %s", events[0].Api.Operation)
+	if events[0].API.Operation != "Check" {
+		t.Fatalf("expected operation Check, got %s", events[0].API.Operation)
 	}
 	if events[0].Authorizations[0].Decision != "Allowed" {
 		t.Fatalf("expected decision Allowed, got %s", events[0].Authorizations[0].Decision)
@@ -67,7 +68,7 @@ func TestAuditUnary_UnknownMethod(t *testing.T) {
 	if events[0].ActivityID != ocsf.ActivityIDOther {
 		t.Fatalf("expected activity_id Other, got %d", events[0].ActivityID)
 	}
-	if events[0].Api.Operation != "SomeFutureMethod" {
-		t.Fatalf("expected operation SomeFutureMethod, got %s", events[0].Api.Operation)
+	if events[0].API.Operation != "SomeFutureMethod" {
+		t.Fatalf("expected operation SomeFutureMethod, got %s", events[0].API.Operation)
 	}
 }
