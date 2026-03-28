@@ -1,240 +1,157 @@
 <div align="center">
 
-![OpenFGA Logo](./openfga-logo.png)
-# OpenFGA
+# openfga-witness
 
-[![Join our community](https://img.shields.io/badge/slack-cncf_%23openfga-40abb8.svg?logo=slack)](https://openfga.dev/community)
-[![DeepWiki](https://img.shields.io/badge/DeepWiki-openfga%2Fopenfga-blue.svg?logo=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACwAAAAyCAYAAAAnWDnqAAAAAXNSR0IArs4c6QAAA05JREFUaEPtmUtyEzEQhtWTQyQLHNak2AB7ZnyXZMEjXMGeK/AIi+QuHrMnbChYY7MIh8g01fJoopFb0uhhEqqcbWTp06/uv1saEDv4O3n3dV60RfP947Mm9/SQc0ICFQgzfc4CYZoTPAswgSJCCUJUnAAoRHOAUOcATwbmVLWdGoH//PB8mnKqScAhsD0kYP3j/Yt5LPQe2KvcXmGvRHcDnpxfL2zOYJ1mFwrryWTz0advv1Ut4CJgf5uhDuDj5eUcAUoahrdY/56ebRWeraTjMt/00Sh3UDtjgHtQNHwcRGOC98BJEAEymycmYcWwOprTgcB6VZ5JK5TAJ+fXGLBm3FDAmn6oPPjR4rKCAoJCal2eAiQp2x0vxTPB3ALO2CRkwmDy5WohzBDwSEFKRwPbknEggCPB/imwrycgxX2NzoMCHhPkDwqYMr9tRcP5qNrMZHkVnOjRMWwLCcr8ohBVb1OMjxLwGCvjTikrsBOiA6fNyCrm8V1rP93iVPpwaE+gO0SsWmPiXB+jikdf6SizrT5qKasx5j8ABbHpFTx+vFXp9EnYQmLx02h1QTTrl6eDqxLnGjporxl3NL3agEvXdT0WmEost648sQOYAeJS9Q7bfUVoMGnjo4AZdUMQku50McDcMWcBPvr0SzbTAFDfvJqwLzgxwATnCgnp4wDl6Aa+Ax283gghmj+vj7feE2KBBRMW3FzOpLOADl0Isb5587h/U4gGvkt5v60Z1VLG8BhYjbzRwyQZemwAd6cCR5/XFWLYZRIMpX39AR0tjaGGiGzLVyhse5C9RKC6ai42ppWPKiBagOvaYk8lO7DajerabOZP46Lby5wKjw1HCRx7p9sVMOWGzb/vA1hwiWc6jm3MvQDTogQkiqIhJV0nBQBTU+3okKCFDy9WwferkHjtxib7t3xIUQtHxnIwtx4mpg26/HfwVNVDb4oI9RHmx5WGelRVlrtiw43zboCLaxv46AZeB3IlTkwouebTr1y2NjSpHz68WNFjHvupy3q8TFn3Hos2IAk4Ju5dCo8B3wP7VPr/FGaKiG+T+v+TQqIrOqMTL1VdWV1DdmcbO8KXBz6esmYWYKPwDL5b5FA1a0hwapHiom0r/cKaoqr+27/XcrS5UwSMbQAAAABJRU5ErkJggg==)](https://deepwiki.com/openfga/openfga)
-[![Go Reference](https://pkg.go.dev/badge/github.com/openfga/openfga.svg)](https://pkg.go.dev/github.com/openfga/openfga)
-![GitHub release (latest SemVer)](https://img.shields.io/github/v/release/openfga/openfga?sort=semver&color=green)
-[![Docker Pulls](https://img.shields.io/docker/pulls/openfga/openfga)](https://hub.docker.com/r/openfga/openfga/tags)
-[![Codecov](https://img.shields.io/codecov/c/github/openfga/openfga)](https://app.codecov.io/gh/openfga/openfga)
-[![Go Report](https://goreportcard.com/badge/github.com/openfga/openfga)](https://goreportcard.com/report/github.com/openfga/openfga)
-[![CII Best Practices](https://bestpractices.coreinfrastructure.org/projects/6374/badge)](https://bestpractices.coreinfrastructure.org/projects/6374)
-[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fopenfga%2Fopenfga.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2Fopenfga%2Fopenfga?ref=badge_shield)
-[![Artifact HUB](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/openfga)](https://artifacthub.io/packages/helm/openfga/openfga)
-[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/openfga/openfga/badge)](https://securityscorecards.dev/viewer/?uri=github.com/openfga/openfga)
-[![SLSA 3](https://slsa.dev/images/gh-badge-level3.svg)](https://slsa.dev)
+**Structured OCSF audit logging for OpenFGA**
+
+A thin fork of [OpenFGA](https://github.com/openfga/openfga) that emits [OCSF](https://schema.ocsf.io/) API Activity events for every API call via a pluggable sink architecture. Deploys as a drop-in replacement for the `openfga` binary.
 
 </div>
 
 ---
 
-**OpenFGA** is a high-performance, flexible authorization/permission engine inspired by [Google Zanzibar](https://research.google/pubs/pub48190/).
-It helps developers easily model and enforce fine-grained access control in their applications.
+## How It Works
 
-## Highlights
+openfga-witness adds a gRPC interceptor layer to OpenFGA that captures every API call and emits a structured [OCSF API Activity (class 6003)](https://schema.ocsf.io/1.4.0/classes/api_activity) audit event. The interceptor sits at the end of OpenFGA's middleware chain — after authentication — so it captures the caller identity, request details, authorization decisions, and latency for each RPC.
 
-- ⚡ High-performance, developer-friendly APIs (HTTP & gRPC)
-- 🔌 Flexible storage backends (In-Memory, PostgreSQL, MySQL, SQLite beta)
-- 🧰 SDKs for [Java](https://central.sonatype.com/artifact/dev.openfga/openfga-sdk), [Node.js](https://www.npmjs.com/package/@openfga/sdk), [Go](https://github.com/openfga/go-sdk), [Python](https://github.com/openfga/python-sdk), [.NET](https://www.nuget.org/packages/OpenFga.Sdk)
-- 🌐  Several additional SDKs and tools [contributed by the community](https://github.com/openfga/community#community-projects)
-- 🧪 [CLI](https://github.com/openfga/cli) for interacting with an OpenFGA server and [testing authorization models](https://openfga.dev/docs/modeling/testing)
-- 🌿 [Terraform Provider](https://github.com/openfga/terraform-provider-openfga) for configuring OpenFGA servers as code
-- 🎮 [Playground](https://openfga.dev/docs/getting-started/setup-openfga/playground) for modeling and testing
-- 🛠 Can also be embedded as a [Go library](https://pkg.go.dev/github.com/openfga/openfga/pkg/server#example-NewServerWithOpts)
-- 🤝 Adopted by [Auth0](https://fga.dev), [Grafana Labs](https://grafana.com/), [Canonical](https://canonical.com/), [Docker](https://docker.com),  [Agicap](https://agicap.com), [Read.AI](https://read.ai) and [others](https://github.com/openfga/community/blob/main/ADOPTERS.md)
+```
+gRPC request
+  → OpenFGA middleware (auth, request ID, logging, ...)
+  → Audit interceptor (captures request + response)
+       → type-switch on request
+            Check, Write, Read, ...  → rich OCSF event with resources + authorizations
+            unknown/future methods   → generic OCSF event
+       → sink.Emit(event)  [best-effort, never fails the RPC]
+  → response returned unchanged
+```
 
----
+**The fork is minimal.** Only one upstream file is modified (`cmd/run/run.go`, ~30 lines) to expose interceptor hooks on the gRPC server. All other code lives under `witness/`, cleanly separated from upstream. This makes rebasing against upstream OpenFGA straightforward — only one commit can ever conflict.
 
-## Table of Contents
-- [Quickstart](#quickstart)
-- [Installation](#installation)
-    - [Docker](#docker)
-    - [Docker Compose](#docker-compose)
-    - [Homebrew](#homebrew)
-    - [Precompiled Binaries](#precompiled-binaries)
-    - [Build from Source](#build-from-source)
-    - [Verify Installation](#verify-installation)
-- [Playground](#playground)
-- [Next Steps](#next-steps)
-- [Limitations](#limitations)
-- [Production Readiness](#production-readiness)
-- [Contributing & Community](#contributing--community)
+### Audit Events
 
----
+Every audited RPC produces an OCSF API Activity 6003 event containing:
+
+- **Who called the API** — service identity from auth claims (`actor`)
+- **What was requested** — method, resource details, tuple keys (`api`, `resources`)
+- **What happened** — authorization decision, status, latency (`authorizations`, `disposition`, `duration`)
+- **Where from** — source IP and port (`src_endpoint`)
+- **Tenant context** — store ID, authorization model ID (`metadata.tenant_uid`, `unmapped`)
+
+Check and BatchCheck events include the authorization decision (Allowed/Denied) and disposition. Write events distinguish creates from deletes. ListObjects and ListUsers capture query parameters and result counts. All other RPCs get a generic event with method, status, and latency.
+
+### Pluggable Sinks
+
+Audit events are emitted to a pluggable `AuditSink` interface. Two production sinks are included:
+
+| Sink | Transport | Use Case |
+|---|---|---|
+| **stdout** (default) | JSON lines to stdout | Development, log aggregators, `kubectl logs` pipelines |
+| **firehose** | AWS Data Firehose `PutRecordBatch` | AWS Security Lake (Firehose → Parquet → S3 → Security Lake) |
+
+A `MemorySink` is also available for testing.
 
 ## Quickstart
 
-> [!IMPORTANT]  
-> The following steps are meant for quick local setup and evaluation.  
-> When using the default **in-memory storage engine**, data is ephemeral and will be discarded once the service stops.
->
-> For [details on configuring](https://openfga.dev/docs/getting-started/setup-openfga/configure-openfga) storage 
-> backends, tuning performance, and deploying OpenFGA securely in production-ready environments, refer to the 
-> documentation: [Running in Production](https://openfga.dev/docs/getting-started/running-in-production).
-
-
-Run OpenFGA with in-memory storage (⚠️ **not for production**):
-
-```shell
-docker run -p 8080:8080 -p 3000:3000 openfga/openfga run
-```
-
-Once running, create a store:
-
-```shell
-curl -X POST 'localhost:8080/stores' \
-  --header 'Content-Type: application/json' \
-  --data-raw '{"name": "openfga-demo"}'
-```
-
-## Installation
-
 ### Docker
 
-OpenFGA is available on [Docker Hub](https://hub.docker.com/r/openfga/openfga), so you can quickly start it using the
-in-memory datastore by running the following commands:
-
 ```shell
-docker pull openfga/openfga
-docker run -p 8080:8080 -p 3000:3000 openfga/openfga run
-```
-
-> [!NOTE]
-> When the HTTP server is enabled, it will attempt to establish an internal client connection to the gRPC server via unix domain socket.
-> When it is not possible to establish a UDS, the client connection automatically falls back to using a TCP socket.
->
-> If running the Docker image using the `--read-only` option, the `--tmpfs` option must also be set in order to enabled use of the unix domain socket.
-> For example `--tmpfs /tmp`
-
-### Docker Compose
-
-[`docker-compose.yaml`](./docker-compose.yaml) provides an example of how to launch OpenFGA with Postgres using `docker compose`.
-
-```shell
-curl -LO https://openfga.dev/docker-compose.yaml
-docker compose up
-```
-
-### Homebrew
-
-If you are a [Homebrew](https://brew.sh/) user, you can install [OpenFGA](https://formulae.brew.sh/formula/openfga) with the following command:
-
-```shell
-brew install openfga
-```
-
-### Precompiled Binaries
-
-Download your platform's [latest release](https://github.com/openfga/openfga/releases/latest) and extract it.
-Then run the binary with the command:
-
-```shell
-./openfga run
+docker build -f Dockerfile.witness -t openfga-witness .
+docker run -p 8080:8080 -p 3000:3000 openfga-witness run --audit-sink=stdout
 ```
 
 ### Build from Source
 
-> [!NOTE]  
-> Make sure you have the latest version of Go installed. See the [Go downloads](https://go.dev/dl/) page.
-
-#### `go install`
-
 ```shell
-export PATH=$PATH:$(go env GOBIN) # make sure $GOBIN is on your $PATH
-go install github.com/openfga/openfga/cmd/openfga
-openfga run
+go build -o openfga-witness ./cmd/witness
+./openfga-witness run
 ```
 
-#### `go build`
-
-```shell
-git clone https://github.com/openfga/openfga.git && cd openfga
-go build -o ./openfga ./cmd/openfga
-./openfga run
-```
-
-### Verify Installation
-
-Now that you have [installed](#installation) OpenFGA, you can test your installation by [creating an OpenFGA Store](https://openfga.dev/docs/getting-started/create-store).
-
-```shell
-curl -X POST 'localhost:8080/stores' \
-  --header 'Content-Type: application/json' \
-  --data-raw '{"name": "openfga-demo"}'
-```
-
-If everything is running correctly, you should get a response with information about the newly created store, for example:
+Audit events appear on stdout as JSON lines (one per API call):
 
 ```json
-{
-  "id": "01G3EMTKQRKJ93PFVDA1SJHWD2",
-  "name": "openfga-demo",
-  "created_at": "2022-05-19T17:11:12.888680Z",
-  "updated_at": "2022-05-19T17:11:12.888680Z"
-}
+{"class_uid":6003,"category_uid":6,"activity_id":2,"type_name":"API Activity: Read","api":{"operation":"Check","service":{"name":"openfga.v1.OpenFGAService"}},"resources":[{"data":{"user":"user:alice","relation":"viewer","object":"document:1"}}],"authorizations":[{"decision":"Allowed"}],"duration":3,"status_id":1,"status":"Success",...}
 ```
 
-## Playground
+## Configuration
 
-The Playground lets you model, visualize, and test authorization setups.
-By default, it’s available at: [http://localhost:3000/playground](http://localhost:3000/playground)
+Configuration uses OpenFGA's existing viper/cobra system. All standard OpenFGA flags, environment variables, and config file options work unchanged.
 
-> [!NOTE]  
-> The Playground is intended for **local development only**.  
-> It can currently only be configured to connect to an OpenFGA server running on `localhost`.
+### Audit-Specific Options
 
-Disable it with:
+| Flag | Env Var | Default | Description |
+|---|---|---|---|
+| `--audit-sink` | `OPENFGA_AUDIT_SINK` | `stdout` | Sink type: `stdout` or `firehose` |
+| `--audit-firehose-stream-name` | `OPENFGA_AUDIT_FIREHOSE_STREAMNAME` | — | Firehose delivery stream name |
+| `--audit-firehose-batch-size` | `OPENFGA_AUDIT_FIREHOSE_BATCHSIZE` | `500` | Records per `PutRecordBatch` call (max 500) |
+| `--audit-firehose-flush-interval` | `OPENFGA_AUDIT_FIREHOSE_FLUSHINTERVAL` | `5s` | Max time before flushing a partial batch |
+| `--audit-firehose-region` | `OPENFGA_AUDIT_FIREHOSE_REGION` | SDK default | AWS region for Firehose |
 
-```shell
-./openfga run --playground-enabled=false
+### Config File
+
+```yaml
+audit:
+  sink: firehose
+  firehose:
+    streamName: openfga-audit
+    batchSize: 500
+    flushInterval: 5s
+    region: us-east-1
 ```
 
-Change port:
+AWS credentials use the standard SDK credential chain (env vars, instance profile, ECS task role).
 
-```shell
-./openfga run --playground-enabled --playground-port 3001
+## Metrics
+
+openfga-witness exposes Prometheus metrics alongside OpenFGA's existing metrics:
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `openfga_witness_audit_events_total` | Counter | `method`, `status` | Total audit events emitted |
+| `openfga_witness_audit_events_dropped_total` | Counter | — | Events that failed to emit (sink error) |
+
+## Upstream Compatibility
+
+openfga-witness tracks upstream OpenFGA via `git remote`. The API is unchanged — all OpenFGA clients, SDKs, and tools work without modification.
+
+```bash
+# Sync with upstream
+git fetch upstream
+git rebase upstream/main
+# Only one commit modifies upstream code — conflicts are rare and small
 ```
 
-> [!TIP]
-> The `OPENFGA_HTTP_ADDR` environment variable can be used to configure the address at which the Playground expects the OpenFGA server to be.
->
-> For example:
->
-> ```shell
-> docker run -e OPENFGA_PLAYGROUND_ENABLED=true \
-> -e OPENFGA_HTTP_ADDR=0.0.0.0:4000 \
-> -p 4000:4000 -p 3000:3000 openfga/openfga run
-> ```
->
-> This starts OpenFGA on port 4000 and configures the Playground accordingly.
+Conformance is verified by running OpenFGA's full matrix test suite (~12,500 lines of YAML test cases) against the witness binary.
 
-## Next Steps
+## Repository Structure
 
-Take a look at examples of how to:
+```
+├── witness/                    Our code (cleanly separated)
+│   ├── ocsf/                   OCSF API Activity 6003 structs + builders
+│   ├── interceptor/            gRPC audit interceptors
+│   ├── sink/                   AuditSink interface + implementations
+│   ├── config/                 Audit config (viper/cobra bindings)
+│   └── metrics/                Prometheus counters
+├── witness_tests/              Integration + conformance tests
+├── cmd/witness/main.go         Our entrypoint
+├── cmd/run/run.go              Modified upstream (interceptor hooks)
+├── Dockerfile.witness          Container build
+└── (everything else)           Upstream OpenFGA, untouched
+```
 
-- [Write an Authorization Model](https://openfga.dev/api/service#/Authorization%20Models/WriteAuthorizationModel)
-- [Write Relationship Tuples](https://openfga.dev/api/service#/Relationship%20Tuples/Write)
-- [Perform Authorization Checks](https://openfga.dev/api/service#/Relationship%20Queries/Check)
-- [Add Authentication to your OpenFGA server](https://openfga.dev/docs/getting-started/setup-openfga/docker#configuring-authentication)
+## OpenFGA
 
-📚 Explore the [Documentation](https://openfga.dev/) and [API Reference](https://openfga.dev/api/service).
+This project is a fork of [OpenFGA](https://github.com/openfga/openfga), a high-performance authorization engine inspired by [Google Zanzibar](https://research.google/pubs/pub48190/). For OpenFGA documentation, see [openfga.dev](https://openfga.dev/).
 
-## Limitations
+## License
 
-### MySQL Storage engine
+Same license as OpenFGA. See [LICENSE](LICENSE).
 
-The MySQL storage engine has stricter length limits on tuple properties than other backends. See [docs](https://openfga.dev/docs/getting-started/setup-openfga/docker#configuring-data-storage).
+---
 
-💡 OpenFGA’s MySQL adapter was contributed by @twintag — thank you!
+<div align="center">
 
-## Production Readiness
+This is not an officially supported Rome AI product.
 
-- ✅ Used in production by [Auth0 FGA](https://auth0.com/fine-grained-authorization) since December 2021
-- ⚠️ Memory storage adapter is **for development only**
-- 🗄 Supported storage: PostgreSQL 14+, MySQL 8, SQLite (beta)
-- 📘 See [Running in Production](https://openfga.dev/docs/best-practices/running-in-production)
+Made with 🖤 in New York.
 
-The OpenFGA team treats **production-impacting issues with highest priority**.
-
-See organizations using OpenFGA in production: [ADOPTERS.md](https://github.com/openfga/community/blob/main/ADOPTERS.md).
-If your organization is using OpenFGA, please consider adding it to the list.
-
-## Contributing & Community
-
-We welcome contributions and community participation.
-
-- 🤝 See [CONTRIBUTING](https://github.com/openfga/.github/blob/main/CONTRIBUTING.md)
-- 🗓 [Monthly Community Meetings](https://github.com/openfga/community/blob/main/community-meetings.md)
-- 💬 Join us on [Slack](https://openfga.dev/docs/community)
+</div>
