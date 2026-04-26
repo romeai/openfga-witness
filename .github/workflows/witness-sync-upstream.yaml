@@ -132,7 +132,7 @@ jobs:
           CONFLICTS: ${{ steps.rebase.outputs.conflicting_files }}
           REPO: ${{ github.repository }}
         run: |
-          EXISTING=$(gh issue list --label "rebase-conflict" --state open --json number -q '.[0].number')
+          EXISTING=$(gh api "repos/${REPO}/issues?labels=rebase-conflict&state=open" --jq '.[0].number // empty')
           BODY=$(cat <<BODY
           ## Upstream Sync Failed
 
