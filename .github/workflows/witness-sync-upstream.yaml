@@ -26,6 +26,17 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
+      - name: Ensure issue labels exist
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh label create rebase-conflict --force \
+            --color D73A4A \
+            --description "Automated upstream rebase failed and needs human attention"
+          gh label create test-failure --force \
+            --color D73A4A \
+            --description "Witness tests failed in an automated workflow"
+
       - name: Fetch upstream
         run: |
           git remote add upstream https://github.com/openfga/openfga.git
@@ -35,7 +46,6 @@ jobs:
         id: check
         run: |
           UPSTREAM_HEAD=$(git rev-parse upstream/main)
-          # Check if upstream/main is already an ancestor of HEAD
           if git merge-base --is-ancestor "$UPSTREAM_HEAD" HEAD; then
             echo "up_to_date=true" >> "$GITHUB_OUTPUT"
             echo "Already up to date with upstream"
@@ -44,16 +54,42 @@ jobs:
             echo "Upstream has new commits, rebasing..."
           fi
 
+      # README.md is rewritten in the witness branch's docs commit. Upstream
+      # edits it frequently, so any upstream README change collides. We
+      # auto-resolve README conflicts in favor of the witness version. Any
+      # other conflict (typically cmd/run/run.go where our interceptor hook
+      # lives) is real and needs a human.
       - name: Rebase witness onto upstream/main
         id: rebase
         if: steps.check.outputs.up_to_date == 'false'
         run: |
-          if git rebase upstream/main; then
-            echo "status=success" >> "$GITHUB_OUTPUT"
-          else
-            echo "status=failure" >> "$GITHUB_OUTPUT"
-            git rebase --abort
-          fi
+          set +e
+          git rebase upstream/main
+          while [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ]; do
+            conflicts=$(git diff --name-only --diff-filter=U)
+            if [ -z "$conflicts" ]; then
+              echo "::error::Rebase paused with no conflicts visible"
+              git rebase --abort
+              echo "status=failure" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if [ "$conflicts" != "README.md" ]; then
+              echo "Conflicts beyond README.md:"
+              echo "$conflicts"
+              git rebase --abort
+              echo "status=failure" >> "$GITHUB_OUTPUT"
+              echo "conflicting_files<<EOF" >> "$GITHUB_OUTPUT"
+              echo "$conflicts" >> "$GITHUB_OUTPUT"
+              echo "EOF" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "Auto-resolving README.md (keeping witness version)"
+            git checkout --theirs README.md
+            git add README.md
+            GIT_EDITOR=true git rebase --continue
+          done
+          echo "status=success" >> "$GITHUB_OUTPUT"
+          echo "Rebase complete"
 
       - name: Set up Go
         if: steps.rebase.outputs.status == 'success'
@@ -88,30 +124,30 @@ jobs:
         if: steps.rebase.outputs.status == 'failure'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          CONFLICTS: ${{ steps.rebase.outputs.conflicting_files }}
         run: |
-          # Check for existing open issue to avoid duplicates
           EXISTING=$(gh issue list --label "rebase-conflict" --state open --json number -q '.[0].number')
-          if [ -n "$EXISTING" ]; then
-            gh issue comment "$EXISTING" --body "Rebase still failing as of $(date -u +%Y-%m-%dT%H:%M:%SZ). Manual intervention required."
-          else
-            gh issue create \
-              --title "Upstream rebase failed — manual intervention required" \
-              --label "rebase-conflict" \
-              --body "$(cat <<'BODY'
+          BODY=$(cat <<BODY
           ## Upstream Sync Failed
 
-          The automated rebase of the \`witness\` branch onto \`upstream/main\` failed on $(date -u +%Y-%m-%dT%H:%M:%SZ).
+          The automated rebase of \`witness\` onto \`upstream/main\` failed. README.md conflicts are auto-resolved by CI, so the failure is in another file (typically \`cmd/run/run.go\` where our interceptor and shutdown hooks live).
 
-          This typically means \`cmd/run/run.go\` (our only upstream-modified file) has changed in a way that conflicts with the interceptor hook.
+          **Conflicting files:**
+          \`\`\`
+          ${CONFLICTS}
+          \`\`\`
 
-          ### To fix manually:
+          See the [workflow run](${RUN_URL}) for full output.
+
+          ### To fix manually
           \`\`\`bash
           git fetch upstream main
           git checkout witness
           git rebase upstream/main
-          # Resolve conflicts in cmd/run/run.go
-          # Re-apply the ExtraUnaryInterceptors/ExtraStreamInterceptors fields
-          # and the RunWithContext() function
+          # README.md auto-resolves locally too if you take "theirs" during rebase.
+          # Resolve the listed files by hand — typically merging the upstream
+          # changes around our ExtraUnaryInterceptors / OnShutdown hooks.
           git rebase --continue
           go test ./witness/... ./witness_tests/ -timeout 600s
           git push --force-with-lease origin witness
@@ -119,15 +155,23 @@ jobs:
 
           Close this issue once the rebase is resolved.
           BODY
-          )"
+          )
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --body "Rebase still failing — see [run](${RUN_URL}). Conflicting files: \`${CONFLICTS}\`."
+          else
+            gh issue create \
+              --title "Upstream rebase failed — manual intervention required" \
+              --label "rebase-conflict" \
+              --body "$BODY"
           fi
 
       - name: Open issue on test failure
         if: steps.rebase.outputs.status == 'success' && failure()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           gh issue create \
             --title "Witness tests failing after upstream rebase" \
             --label "test-failure" \
-            --body "Tests failed after rebasing witness onto upstream/main on $(date -u +%Y-%m-%dT%H:%M:%SZ). Check the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details."
+            --body "Tests failed after rebasing witness onto upstream/main. See [workflow run](${RUN_URL})."
