@@ -1,39 +1,45 @@
 # yaml-language-server: $schema=https://json.schemastore.org/dependabot-2.0.json
+#
+# Narrowed to fork-relevant deps only. Upstream openfga/openfga handles
+# its own dep bumps; we rebase onto upstream tags via witness-release.yaml,
+# which pulls in their go.mod as-is.
 version: 2
 
 updates:
+  # Go modules added by the witness audit layer (sinks for Firehose, Kafka).
   - package-ecosystem: "gomod"
     directory: "/"
     schedule:
       interval: "weekly"
+    allow:
+      - dependency-name: "github.com/aws/aws-sdk-go-v2"
+      - dependency-name: "github.com/aws/aws-sdk-go-v2/*"
+      - dependency-name: "github.com/segmentio/kafka-go"
     groups:
-      dependencies:
+      witness-deps:
         patterns:
           - "*"
 
-  - package-ecosystem: "gomod"
-    directory: "/tools"
-    schedule:
-      interval: "weekly"
-    groups:
-      dependencies:
-        patterns:
-          - "*"
-
+  # Base images for Dockerfile.witness only. Upstream's Dockerfile uses
+  # chainguard images and is owned by upstream.
   - package-ecosystem: "docker"
     directory: "/"
     schedule:
       interval: "weekly"
+    ignore:
+      - dependency-name: "cgr.dev/chainguard/*"
+      - dependency-name: "ghcr.io/grpc-ecosystem/grpc-health-probe"
     groups:
-      dependencies:
+      witness-docker:
         patterns:
           - "*"
 
+  # Pinned action SHAs in the fork-only workflows.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
     groups:
-      dependencies:
+      witness-actions:
         patterns:
           - "*"
