@@ -213,6 +213,7 @@ func TestJitteredTTL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.expectedMax, MaxJitteredTTL(tt.baseTTL, tt.jitterPercentage))
 			for i := 0; i < 100; i++ {
 				result := JitteredTTL(tt.baseTTL, tt.jitterPercentage)
 				require.GreaterOrEqual(t, result, tt.expectedMin, "result %v is less than minimum %v", result, tt.expectedMin)
@@ -237,6 +238,7 @@ func TestJitteredTTL(t *testing.T) {
 			result = JitteredTTL(time.Duration(math.MaxInt64), 100)
 		})
 		require.Equal(t, time.Duration(math.MaxInt64), result)
+		require.Equal(t, time.Duration(math.MaxInt64), MaxJitteredTTL(time.Duration(math.MaxInt64), 100))
 	})
 }
 

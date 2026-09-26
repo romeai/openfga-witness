@@ -106,7 +106,7 @@ func (s *Server) BatchCheck(ctx context.Context, req *openfgav1.BatchCheckReques
 					s.checkDatastoreThrottleDuration,
 				),
 				commands.WithCheckQueryV2Model(mg),
-				commands.WithCheckQueryV2Cache(s.sharedDatastoreResources.CheckCache),
+				commands.WithCheckQueryV2Cache(s.sharedDatastoreResources.CheckCache, s.sharedDatastoreResources.CheckCacheInvalidations),
 				commands.WithCheckQueryV2QueryCacheEnabled(s.cacheSettings.ShouldCacheCheckQueries()),
 				commands.WithCheckQueryV2QueryCacheTTL(s.cacheSettings.CheckQueryCacheTTL),
 				commands.WithCheckQueryV2Planner(s.planner),

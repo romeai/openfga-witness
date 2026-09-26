@@ -39,6 +39,7 @@ import (
 	serverErrors "github.com/openfga/openfga/pkg/server/errors"
 	"github.com/openfga/openfga/pkg/server/test"
 	"github.com/openfga/openfga/pkg/storage"
+	"github.com/openfga/openfga/pkg/storage/cache/keys"
 	"github.com/openfga/openfga/pkg/storage/memory"
 	"github.com/openfga/openfga/pkg/storage/mysql"
 	"github.com/openfga/openfga/pkg/storage/postgres"
@@ -2404,10 +2405,10 @@ func TestCheckWithCachedUserTuple(t *testing.T) {
 		return check(openfgav1.ConsistencyPreference_UNSPECIFIED)
 	}, 2*time.Second, 10*time.Millisecond)
 	require.NotNil(t, cachedUserTuple().Tuple)
-	require.NotNil(t, cache.Get(storage.InvalidIteratorByObjectRelationCacheKey(storeID, "document:1", "viewer")))
-	storeInvalidation, _ := cache.Get(storage.InvalidIteratorCacheKey(storeID)).(*storage.InvalidEntityCacheEntry)
-	require.NotNil(t, storeInvalidation, "the store's first changelog read invalidates it as a whole")
-	require.True(t, storeInvalidation.LastModified.Before(notFoundAt))
+	markers := s.sharedDatastoreResources.CheckCacheInvalidations
+	require.True(t, markers.Invalidated(notFoundAt, storage.InvalidIteratorByObjectRelationCacheKey(storeID, "document:1", "viewer")))
+	require.False(t, markers.Invalidated(notFoundAt, storage.InvalidIteratorCacheKey(storeID)),
+		"the store's first changelog read invalidates it as a whole, before the lookup was cached")
 }
 
 // writeDuringReadDatastore commits one write while serving a direct-tuple
@@ -2482,10 +2483,6 @@ func TestCheckQueryCacheWriteDuringResolution(t *testing.T) {
 	}
 
 	require.False(t, check("document:0"))
-	require.Eventually(t, func() bool {
-		return cache.Get(storage.ChangelogCacheKey(storeID)) != nil
-	}, 2*time.Second, 10*time.Millisecond)
-
 	require.False(t, check("document:1"))
 	require.True(t, ds.written.Load())
 
@@ -2630,6 +2627,133 @@ func TestCheckQueryCacheWriteCommittedAfterItsTimestamp(t *testing.T) {
 	require.NoError(t, ds.Write(ctx, storeID, nil, []*openfgav1.TupleKey{tuple.NewTupleKey("document:1", "viewer", "user:anne")}))
 
 	require.Eventually(t, check, time.Second, 10*time.Millisecond)
+}
+
+// readTrackingCache is a result cache that can evict every entry not read
+// since the last mark, as size pressure evicts cold entries first.
+type readTrackingCache struct {
+	mu      sync.Mutex
+	entries map[keys.Key]any
+	read    map[keys.Key]bool
+}
+
+func newReadTrackingCache() *readTrackingCache {
+	return &readTrackingCache{entries: map[keys.Key]any{}, read: map[keys.Key]bool{}}
+}
+
+func (c *readTrackingCache) Get(key keys.Key) any {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.read[key] = true
+	return c.entries[key]
+}
+
+func (c *readTrackingCache) Set(key keys.Key, value any, _ time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.entries[key] = value
+}
+
+func (c *readTrackingCache) Delete(key keys.Key) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.entries, key)
+}
+
+func (c *readTrackingCache) Stop() {}
+
+func (c *readTrackingCache) markReads() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.read = map[keys.Key]bool{}
+}
+
+func (c *readTrackingCache) evictUnreadExcept(keep keys.Key) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for key := range c.entries {
+		if key != keep && !c.read[key] {
+			delete(c.entries, key)
+		}
+	}
+}
+
+// TestCacheEvictionCannotReviveInvalidatedEntry covers size pressure on the
+// result cache after the controller invalidated a cached lookup: whatever
+// the cache evicts, the invalidated lookup must not be served again.
+func TestCacheEvictionCannotReviveInvalidatedEntry(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t)
+	})
+
+	ctx := context.Background()
+	storeID := ulid.Make().String()
+	modelID := ulid.Make().String()
+
+	model := parser.MustTransformDSLToProto(`
+		model
+			schema 1.1
+		type user
+		type document
+			relations
+				define viewer: [user]
+	`)
+	model.Id = modelID
+
+	ds := memory.New()
+	require.NoError(t, ds.WriteAuthorizationModel(ctx, storeID, model))
+	require.NoError(t, ds.Write(ctx, storeID, nil, []*openfgav1.TupleKey{tuple.NewTupleKey("document:0", "viewer", "user:bob")}))
+	// The seed write ages out of the iterator TTL, so the controller's read
+	// after the later write invalidates only what that write touched.
+	iteratorTTL := 500 * time.Millisecond
+	time.Sleep(2 * iteratorTTL)
+
+	controllerTTL := 50 * time.Millisecond
+	cache := newReadTrackingCache()
+	s := MustNewServerWithOpts(
+		WithContext(ctx),
+		WithDatastore(ds),
+		WithCheckCacheLimit(100),
+		WithCheckCache(cache),
+		WithCheckIteratorCacheEnabled(true),
+		WithCheckIteratorCacheMaxResults(10),
+		WithCheckIteratorCacheTTL(iteratorTTL),
+		WithCacheControllerEnabled(true),
+		WithCacheControllerTTL(controllerTTL),
+	)
+	t.Cleanup(s.Close)
+
+	check := func(object string) bool {
+		resp, err := s.Check(ctx, &openfgav1.CheckRequest{
+			StoreId:              storeID,
+			TupleKey:             tuple.NewCheckRequestTupleKey(object, "viewer", "user:anne"),
+			AuthorizationModelId: modelID,
+		})
+		require.NoError(t, err)
+		return resp.GetAllowed()
+	}
+	notFoundKey := storage.ReadUserTupleKey(storeID, storage.ReadUserTupleFilter{Object: "document:1", Relation: "viewer", User: "user:anne"})
+
+	require.False(t, check("document:1"))
+	require.NotNil(t, cache.Get(notFoundKey))
+
+	_, err := s.Write(ctx, &openfgav1.WriteRequest{
+		StoreId:              storeID,
+		AuthorizationModelId: modelID,
+		Writes: &openfgav1.WriteRequestWrites{
+			TupleKeys: []*openfgav1.TupleKey{tuple.NewTupleKey("document:1", "viewer", "user:anne")},
+		},
+	})
+	require.NoError(t, err)
+	time.Sleep(2 * controllerTTL)
+
+	// A Check on another object makes the controller read the changelog and
+	// invalidate document:1; entries that Check did not read are cold.
+	cache.markReads()
+	require.False(t, check("document:2"))
+	cache.evictUnreadExcept(notFoundKey)
+
+	require.True(t, check("document:1"))
 }
 
 func TestBatchCheckWithCachedIterator(t *testing.T) {

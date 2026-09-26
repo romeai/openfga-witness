@@ -465,6 +465,7 @@ func TestV2CheckCacheSeparation(t *testing.T) {
 
 		_, err := s.v2Check(ctx, req,
 			s.sharedDatastoreResources.ShadowCheckCache,
+			s.sharedDatastoreResources.ShadowCheckCacheInvalidations,
 			s.sharedDatastoreResources.ShadowCacheController,
 			s.shadowAuthzModelGraphResolver,
 		)
@@ -491,6 +492,7 @@ func TestV2CheckCacheSeparation(t *testing.T) {
 
 		_, err := s.v2Check(ctx, req,
 			s.sharedDatastoreResources.CheckCache,
+			s.sharedDatastoreResources.CheckCacheInvalidations,
 			s.sharedDatastoreResources.CacheController,
 			s.authzModelGraphResolver,
 		)
@@ -661,6 +663,7 @@ func TestV2Check_SanitizeRequest(t *testing.T) {
 		t.Helper()
 		_, err := s.v2Check(ctx, req,
 			s.sharedDatastoreResources.CheckCache,
+			s.sharedDatastoreResources.CheckCacheInvalidations,
 			s.sharedDatastoreResources.CacheController,
 			s.authzModelGraphResolver,
 		)
@@ -764,6 +767,7 @@ func TestV2CheckQueryCacheEnabled(t *testing.T) {
 		ctx := context.Background()
 		res, err := s.v2Check(ctx, req,
 			s.sharedDatastoreResources.CheckCache,
+			s.sharedDatastoreResources.CheckCacheInvalidations,
 			s.sharedDatastoreResources.CacheController,
 			s.authzModelGraphResolver,
 		)
@@ -778,6 +782,7 @@ func TestV2CheckQueryCacheEnabled(t *testing.T) {
 		// Call v2Check again with the same request to verify cached entries are retrieved.
 		res, err = s.v2Check(ctx, req,
 			s.sharedDatastoreResources.CheckCache,
+			s.sharedDatastoreResources.CheckCacheInvalidations,
 			s.sharedDatastoreResources.CacheController,
 			s.authzModelGraphResolver,
 		)
@@ -803,6 +808,7 @@ func TestV2CheckQueryCacheEnabled(t *testing.T) {
 		ctx := context.Background()
 		res, err := s.v2Check(ctx, req,
 			s.sharedDatastoreResources.CheckCache,
+			s.sharedDatastoreResources.CheckCacheInvalidations,
 			s.sharedDatastoreResources.CacheController,
 			s.authzModelGraphResolver,
 		)

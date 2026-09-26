@@ -3,6 +3,7 @@ package shared
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -11,6 +12,7 @@ import (
 	"github.com/openfga/openfga/internal/cachecontroller"
 	mockstorage "github.com/openfga/openfga/internal/mocks"
 	"github.com/openfga/openfga/pkg/server/config"
+	"github.com/openfga/openfga/pkg/storage"
 )
 
 func TestSharedDatastoreResources(t *testing.T) {
@@ -30,6 +32,7 @@ func TestSharedDatastoreResources(t *testing.T) {
 		require.Equal(t, sharedCtx, s.ServerCtx)
 		require.Equal(t, sharedSf, s.SingleflightGroup)
 		require.Nil(t, s.CheckCache)
+		require.Nil(t, s.CheckCacheInvalidations)
 		require.NotNil(t, s.WaitGroup)
 		require.NotNil(t, s.CacheController)
 		_, ok := s.CacheController.(*cachecontroller.NoopCacheController)
@@ -48,6 +51,31 @@ func TestSharedDatastoreResources(t *testing.T) {
 
 		require.NotNil(t, s.CheckCache)
 		require.NotNil(t, s.ShadowCheckCache)
+		require.NotNil(t, s.CheckCacheInvalidations)
+		require.NotNil(t, s.ShadowCheckCacheInvalidations)
+		require.NotSame(t, s.CheckCacheInvalidations, s.ShadowCheckCacheInvalidations, "each cache has its own markers")
+	})
+
+	t.Run("markers_outlive_every_iterator_entry", func(t *testing.T) {
+		settings := config.CacheSettings{
+			CheckCacheLimit:                    1,
+			CheckIteratorCacheEnabled:          true,
+			CheckIteratorCacheTTL:              time.Hour,
+			ListObjectsIteratorCacheEnabled:    true,
+			ListObjectsIteratorCacheMaxResults: 1,
+			ListObjectsIteratorCacheTTL:        2 * time.Hour,
+			CacheTTLJitterPercentage:           10,
+		}
+
+		s, err := NewSharedDatastoreResources(sharedCtx, sharedSf, mockDatastore, settings)
+		require.NoError(t, err)
+		t.Cleanup(s.Close)
+
+		longest := 2*time.Hour + 12*time.Minute
+		for _, markers := range []*storage.InvalidationMarkers{s.CheckCacheInvalidations, s.ShadowCheckCacheInvalidations} {
+			require.NotPanics(t, func() { markers.MustGuard(longest) })
+			require.Panics(t, func() { markers.MustGuard(longest + time.Nanosecond) })
+		}
 	})
 
 	t.Run("with_cache_controller", func(t *testing.T) {
@@ -95,7 +123,7 @@ func TestSharedDatastoreResources(t *testing.T) {
 		require.NotNil(t, s.ShadowCacheController)
 		_, ok := s.ShadowCacheController.(*cachecontroller.InMemoryCacheController)
 		require.True(t, ok)
-		require.NotEqual(t, s.CacheController, s.ShadowCacheController)
+		require.NotSame(t, s.CacheController, s.ShadowCacheController)
 	})
 
 	t.Run("with_custom_logger", func(t *testing.T) {

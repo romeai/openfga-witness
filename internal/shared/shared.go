@@ -47,15 +47,21 @@ func WithCheckCache(c storage.InMemoryCache[any]) SharedDatastoreResourcesOpt {
 
 // SharedDatastoreResources contains resources that can be shared across Check requests.
 type SharedDatastoreResources struct {
-	SingleflightGroup     *singleflight.Group
-	WaitGroup             *sync.WaitGroup
-	ServerCtx             context.Context
-	CheckCache            storage.InMemoryCache[any]
-	CacheController       cachecontroller.CacheController
-	ShadowCheckCache      storage.InMemoryCache[any]
-	ShadowCacheController cachecontroller.CacheController
-	Logger                logger.Logger
-	SharedIteratorStorage *sharediterator.Storage
+	SingleflightGroup *singleflight.Group
+	WaitGroup         *sync.WaitGroup
+	ServerCtx         context.Context
+	CheckCache        storage.InMemoryCache[any]
+	// CheckCacheInvalidations holds the invalidation markers guarding the
+	// iterator entries in CheckCache; CacheController writes them.
+	CheckCacheInvalidations *storage.InvalidationMarkers
+	CacheController         cachecontroller.CacheController
+	ShadowCheckCache        storage.InMemoryCache[any]
+	// ShadowCheckCacheInvalidations is CheckCacheInvalidations for
+	// ShadowCheckCache, written by ShadowCacheController.
+	ShadowCheckCacheInvalidations *storage.InvalidationMarkers
+	ShadowCacheController         cachecontroller.CacheController
+	Logger                        logger.Logger
+	SharedIteratorStorage         *sharediterator.Storage
 
 	// V2 iterator cache settings - used by CheckQueryV2 to wrap datastore with shared singleflight
 	V2IteratorCacheEnabled bool
@@ -105,9 +111,15 @@ func NewSharedDatastoreResources(
 		}
 	}
 
+	// Markers outlive every iterator entry of either iterator cache.
+	markerTTL := storage.MaxJitteredTTL(max(settings.CheckIteratorCacheTTL, settings.ListObjectsIteratorCacheTTL), settings.CacheTTLJitterPercentage)
+	if s.CheckCache != nil {
+		s.CheckCacheInvalidations = storage.NewInvalidationMarkers(markerTTL)
+	}
+
 	// Only create a cache controller if it wasn't already set via opts.
 	if settings.ShouldCreateCacheController() && s.CacheController == defaultCacheController {
-		s.CacheController = cachecontroller.NewCacheController(ds, s.CheckCache, settings.CacheControllerTTL, settings.CheckQueryCacheTTL, settings.CheckIteratorCacheTTL, cachecontroller.WithLogger(s.Logger))
+		s.CacheController = cachecontroller.NewCacheController(ds, s.CheckCacheInvalidations, settings.CacheControllerTTL, settings.CheckQueryCacheTTL, settings.CheckIteratorCacheTTL, cachecontroller.WithLogger(s.Logger))
 	}
 
 	// The default behavior is to use the same cache instance for both the
@@ -117,6 +129,7 @@ func NewSharedDatastoreResources(
 	// Set shadow defaults only if opts didn't already customize them.
 	if s.ShadowCheckCache == nil {
 		s.ShadowCheckCache = s.CheckCache
+		s.ShadowCheckCacheInvalidations = s.CheckCacheInvalidations
 	}
 	if s.ShadowCacheController == nil {
 		s.ShadowCacheController = s.CacheController
@@ -130,11 +143,12 @@ func NewSharedDatastoreResources(
 		if err != nil {
 			return nil, err
 		}
+		s.ShadowCheckCacheInvalidations = storage.NewInvalidationMarkers(markerTTL)
 	}
 
 	// Only create a shadow cache controller if it wasn't already set via opts.
 	if settings.ShouldCreateShadowCacheController() && s.ShadowCacheController == s.CacheController {
-		s.ShadowCacheController = cachecontroller.NewCacheController(ds, s.ShadowCheckCache, settings.CacheControllerTTL, settings.CheckQueryCacheTTL, settings.CheckIteratorCacheTTL, cachecontroller.WithLogger(s.Logger))
+		s.ShadowCacheController = cachecontroller.NewCacheController(ds, s.ShadowCheckCacheInvalidations, settings.CacheControllerTTL, settings.CheckQueryCacheTTL, settings.CheckIteratorCacheTTL, cachecontroller.WithLogger(s.Logger))
 	}
 
 	return s, nil

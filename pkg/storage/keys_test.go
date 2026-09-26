@@ -567,23 +567,6 @@ func TestInvalidIteratorCacheKeys(t *testing.T) {
 	})
 }
 
-func TestChangelogCacheKey(t *testing.T) {
-	t.Run("valid_hex", func(t *testing.T) {
-		requireValidHex(t, ChangelogCacheKey(ulid.Make().String()))
-	})
-
-	t.Run("different_stores_produce_different_keys", func(t *testing.T) {
-		require.NotEqual(t, ChangelogCacheKey("store-a"), ChangelogCacheKey("store-b"))
-	})
-
-	t.Run("identical_inputs_produce_identical_keys", func(t *testing.T) {
-		key1 := ChangelogCacheKey("store-x")
-		key2 := ChangelogCacheKey("store-x")
-
-		require.Equal(t, key1, key2)
-	})
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Cross-cutting: delimiter injection must not cause collisions
 // ─────────────────────────────────────────────────────────────────────────────
@@ -813,12 +796,6 @@ func TestCrossFunction_KeysDoNotCollide(t *testing.T) {
 		checkKey := CheckCacheKey(store, "document:1", "viewer", "user:alice", 0)
 		invalidKey := InvalidIteratorCacheKey(store)
 		require.NotEqual(t, checkKey, invalidKey)
-	})
-
-	t.Run("CheckCacheKey_vs_ChangelogCacheKey", func(t *testing.T) {
-		checkKey := CheckCacheKey(store, "document:1", "viewer", "user:alice", 0)
-		changelogKey := ChangelogCacheKey(store)
-		require.NotEqual(t, checkKey, changelogKey)
 	})
 }
 

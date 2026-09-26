@@ -2,6 +2,7 @@ package storagewrappers
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -13,6 +14,7 @@ import (
 	"github.com/openfga/openfga/internal/utils/apimethod"
 	"github.com/openfga/openfga/pkg/logger"
 	"github.com/openfga/openfga/pkg/server/config"
+	"github.com/openfga/openfga/pkg/storage"
 	"github.com/openfga/openfga/pkg/storage/storagewrappers/sharediterator"
 	"github.com/openfga/openfga/pkg/tuple"
 )
@@ -33,8 +35,9 @@ func TestRequestStorageWrapper(t *testing.T) {
 		br := NewRequestStorageWrapperWithCache(mockDatastore, requestContextualTuples, &Operation{Concurrency: maxConcurrentReads, Method: apimethod.Check},
 			DataResourceConfiguration{
 				Resources: &shared.SharedDatastoreResources{
-					CheckCache: mockCache,
-					Logger:     logger.NewNoopLogger(),
+					CheckCache:              mockCache,
+					CheckCacheInvalidations: storage.NewInvalidationMarkers(time.Hour),
+					Logger:                  logger.NewNoopLogger(),
 				},
 				CacheSettings: config.CacheSettings{
 					CheckIteratorCacheEnabled: true,
@@ -77,9 +80,10 @@ func TestRequestStorageWrapper(t *testing.T) {
 		br := NewRequestStorageWrapperWithCache(mockDatastore, requestContextualTuples, &Operation{Concurrency: maxConcurrentReads, Method: apimethod.Check},
 			DataResourceConfiguration{
 				Resources: &shared.SharedDatastoreResources{
-					CheckCache:            mockCache,
-					Logger:                logger.NewNoopLogger(),
-					SharedIteratorStorage: sharedIteratorStorage,
+					CheckCache:              mockCache,
+					CheckCacheInvalidations: storage.NewInvalidationMarkers(time.Hour),
+					Logger:                  logger.NewNoopLogger(),
+					SharedIteratorStorage:   sharedIteratorStorage,
 				},
 				CacheSettings: config.CacheSettings{
 					CheckIteratorCacheEnabled: true,
@@ -175,8 +179,9 @@ func TestRequestStorageWrapper(t *testing.T) {
 			&Operation{Concurrency: maxConcurrentReads, Method: apimethod.ListObjects},
 			DataResourceConfiguration{
 				Resources: &shared.SharedDatastoreResources{
-					CheckCache: mockCache,
-					Logger:     logger.NewNoopLogger(),
+					CheckCache:              mockCache,
+					CheckCacheInvalidations: storage.NewInvalidationMarkers(time.Hour),
+					Logger:                  logger.NewNoopLogger(),
 				},
 				CacheSettings: config.CacheSettings{
 					ListObjectsIteratorCacheEnabled:    true,
@@ -207,6 +212,7 @@ func TestRequestStorageWrapper(t *testing.T) {
 		mockDatastore := mocks.NewMockRelationshipTupleReader(ctrl)
 		mockCache := mocks.NewMockInMemoryCache[any](ctrl)
 		shadowCache := mocks.NewMockInMemoryCache[any](ctrl)
+		shadowInvalidations := storage.NewInvalidationMarkers(time.Hour)
 
 		requestContextualTuples := []*openfgav1.TupleKey{
 			tuple.NewTupleKey("doc:1", "viewer", "user:maria"),
@@ -216,9 +222,11 @@ func TestRequestStorageWrapper(t *testing.T) {
 			&Operation{Concurrency: maxConcurrentReads, Method: apimethod.ListObjects},
 			DataResourceConfiguration{
 				Resources: &shared.SharedDatastoreResources{
-					CheckCache:       mockCache,
-					ShadowCheckCache: shadowCache,
-					Logger:           logger.NewNoopLogger(),
+					CheckCache:                    mockCache,
+					CheckCacheInvalidations:       storage.NewInvalidationMarkers(time.Hour),
+					ShadowCheckCache:              shadowCache,
+					ShadowCheckCacheInvalidations: shadowInvalidations,
+					Logger:                        logger.NewNoopLogger(),
 				},
 				CacheSettings: config.CacheSettings{
 					ListObjectsIteratorCacheEnabled:    true,
@@ -238,6 +246,8 @@ func TestRequestStorageWrapper(t *testing.T) {
 		c, ok := a.RelationshipTupleReader.(*CachedDatastore)
 		require.True(t, ok)
 		require.EqualValues(t, 11, c.jitterPercentage)
+		require.Same(t, shadowCache, c.cache)
+		require.Same(t, shadowInvalidations, c.invalidations)
 
 		d, ok := c.RelationshipTupleReader.(*BoundedTupleReader)
 		require.Equal(t, maxConcurrentReads, cap(d.limiter))

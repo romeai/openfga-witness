@@ -250,15 +250,19 @@ func (c *CachingIterator) flush() {
 		}
 	}
 
+	c.tuples = nil // Release for GC
+
+	ttl := storage.EntryTTL(c.createdAt, c.ttl)
+	if ttl <= 0 {
+		return
+	}
 	tuplesCacheSizeHistogram.WithLabelValues(c.operation, c.method).Observe(float64(len(entries)))
 
 	c.cache.Set(c.cacheKey, &V2IteratorCacheEntry{
 		Entries:      entries,
 		LastModified: c.createdAt,
 		Ordered:      c.inner.IsOrdered(),
-	}, c.ttl)
-
-	c.tuples = nil // Release for GC
+	}, ttl)
 }
 
 // drainInBackground continues fetching tuples after Stop().

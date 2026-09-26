@@ -53,6 +53,7 @@ func NewRequestStorageWrapperWithCache(
 			dataResourceConfiguration.Resources.ServerCtx,
 			tupleReader,
 			dataResourceConfiguration.Resources.CheckCache,
+			dataResourceConfiguration.Resources.CheckCacheInvalidations,
 			int(dataResourceConfiguration.CacheSettings.CheckIteratorCacheMaxResults),
 			dataResourceConfiguration.CacheSettings.CheckIteratorCacheTTL,
 			dataResourceConfiguration.Resources.SingleflightGroup,
@@ -63,13 +64,16 @@ func NewRequestStorageWrapperWithCache(
 		)
 	} else if op.Method == apimethod.ListObjects && dataResourceConfiguration.CacheSettings.ShouldCacheListObjectsIterators() {
 		checkCache := dataResourceConfiguration.Resources.CheckCache
+		invalidations := dataResourceConfiguration.Resources.CheckCacheInvalidations
 		if dataResourceConfiguration.UseShadowCache {
 			checkCache = dataResourceConfiguration.Resources.ShadowCheckCache
+			invalidations = dataResourceConfiguration.Resources.ShadowCheckCacheInvalidations
 		}
 		tupleReader = NewCachedDatastore(
 			dataResourceConfiguration.Resources.ServerCtx,
 			tupleReader,
 			checkCache,
+			invalidations,
 			int(dataResourceConfiguration.CacheSettings.ListObjectsIteratorCacheMaxResults),
 			dataResourceConfiguration.CacheSettings.ListObjectsIteratorCacheTTL,
 			dataResourceConfiguration.Resources.SingleflightGroup,

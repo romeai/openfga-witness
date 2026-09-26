@@ -646,7 +646,7 @@ func TestCachingIterator_PopulatesCache(t *testing.T) {
 	mockCache.EXPECT().Get(cacheKey).Return(nil).Times(1)
 	// Capture the cache entry
 	var capturedEntry *V2IteratorCacheEntry
-	mockCache.EXPECT().Set(cacheKey, gomock.Any(), ttl).DoAndReturn(
+	mockCache.EXPECT().Set(cacheKey, gomock.Any(), entryTTL(ttl)).DoAndReturn(
 		func(_ keys.Key, value interface{}, _ time.Duration) {
 			capturedEntry = value.(*V2IteratorCacheEntry)
 		},

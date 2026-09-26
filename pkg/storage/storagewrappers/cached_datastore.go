@@ -99,6 +99,7 @@ type CachedDatastore struct {
 
 	ctx           context.Context
 	cache         storage.InMemoryCache[any]
+	invalidations *storage.InvalidationMarkers
 	maxResultSize int
 	ttl           time.Duration
 
@@ -119,11 +120,13 @@ type CachedDatastore struct {
 	method string // Whether this datastore is for Check or ListObjects
 }
 
-// NewCachedDatastore returns a wrapper over a datastore that caches iterators in memory.
+// NewCachedDatastore returns a wrapper over a datastore that caches iterators
+// in memory, valid until invalidated by a marker in invalidations.
 func NewCachedDatastore(
 	ctx context.Context,
 	inner storage.RelationshipTupleReader,
 	cache storage.InMemoryCache[any],
+	invalidations *storage.InvalidationMarkers,
 	maxSize int,
 	ttl time.Duration,
 	sf *singleflight.Group,
@@ -134,6 +137,7 @@ func NewCachedDatastore(
 		ctx:                     ctx,
 		RelationshipTupleReader: inner,
 		cache:                   cache,
+		invalidations:           invalidations,
 		maxResultSize:           maxSize,
 		ttl:                     ttl,
 		sf:                      sf,
@@ -145,6 +149,7 @@ func NewCachedDatastore(
 	for _, opt := range opts {
 		opt(c)
 	}
+	invalidations.MustGuard(storage.MaxJitteredTTL(ttl, c.jitterPercentage))
 
 	return c
 }
@@ -276,14 +281,14 @@ func (c *CachedDatastore) ReadUserTuple(
 	tuplesCacheTotalCounter.WithLabelValues(storage.OperationReadUserTuple, c.method).Inc()
 	cacheKey := storage.ReadUserTupleKey(store, filter)
 	invalidStoreKey := storage.InvalidIteratorCacheKey(store)
-	invalidEntityKeys := []keys.Key{storage.InvalidIteratorByObjectRelationCacheKey(store, filter.Object, filter.Relation)}
+	invalidEntityKey := storage.InvalidIteratorByObjectRelationCacheKey(store, filter.Object, filter.Relation)
 
 	if res := c.cache.Get(cacheKey); res != nil {
 		entry, ok := res.(*storage.UserTupleCacheEntry)
 		if !ok {
 			return nil, fmt.Errorf("ReadUserTuple cache entry %s holds %T", cacheKey, res)
 		}
-		if !isInvalidAt(c.cache, entry.LastModified, invalidStoreKey, invalidEntityKeys) {
+		if !c.invalidations.Invalidated(entry.LastModified, invalidStoreKey, invalidEntityKey) {
 			tuplesCacheHitCounter.WithLabelValues(storage.OperationReadUserTuple, c.method).Inc()
 			span.SetAttributes(attribute.Bool("cached", true))
 			storage.ObserveCacheEntry(ctx, entry.LastModified)
@@ -305,59 +310,35 @@ func (c *CachedDatastore) ReadUserTuple(
 		return nil, fmt.Errorf("ReadUserTuple on store %s returned neither a tuple nor ErrNotFound for %s#%s@%s", store, filter.Object, filter.Relation, filter.User)
 	}
 
-	// A marker newer than the query start may already be present; storing
-	// anyway would let the entry outlive the marker's TTL and turn valid.
-	if !isInvalidAt(c.cache, queriedAt, invalidStoreKey, invalidEntityKeys) {
-		entry := &storage.UserTupleCacheEntry{LastModified: queriedAt}
-		if t != nil {
-			entry.Tuple = proto.Clone(t).(*openfgav1.Tuple)
-		}
-		c.cache.Set(cacheKey, entry, storage.JitteredTTL(c.ttl, c.jitterPercentage))
+	// An entry a marker already invalidates could never be served.
+	if c.invalidations.Invalidated(queriedAt, invalidStoreKey, invalidEntityKey) {
+		return t, err
 	}
+	ttl := storage.EntryTTL(queriedAt, storage.JitteredTTL(c.ttl, c.jitterPercentage))
+	if ttl <= 0 {
+		return t, err
+	}
+	entry := &storage.UserTupleCacheEntry{LastModified: queriedAt}
+	if t != nil {
+		entry.Tuple = proto.Clone(t).(*openfgav1.Tuple)
+	}
+	c.cache.Set(cacheKey, entry, ttl)
 	return t, err
 }
 
-func isInvalidAt(cache storage.InMemoryCache[any], ts time.Time, invalidStore keys.Key, invalidEntityKeys []keys.Key) bool {
-	if res := cache.Get(invalidStore); res != nil {
-		invalidEntry, ok := res.(*storage.InvalidEntityCacheEntry)
-		// if the invalid entity is not valid, do not discard
-		if ok && ts.Before(invalidEntry.LastModified) {
-			return true
-		}
-	}
-
-	for _, invalidEntityKey := range invalidEntityKeys {
-		if res := cache.Get(invalidEntityKey); res != nil {
-			invalidEntry, ok := res.(*storage.InvalidEntityCacheEntry)
-			// if the invalid entity is not valid, do not discard
-			if ok && ts.Before(invalidEntry.LastModified) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// findInCache tries to find a key in the cache.
-// It returns true if and only if:
-// the key is present, and
-// the cache key satisfies TS(key) >= TS(store), and
-// all of the invalidEntityKeys satisfy TS(key) >= TS(invalid).
-func findInCache(cache storage.InMemoryCache[any], key, storeKey keys.Key, invalidEntityKeys []keys.Key) (*storage.TupleIteratorCacheEntry, bool) {
-	var tupleEntry *storage.TupleIteratorCacheEntry
-	var ok bool
-
+// findInCache returns the iterator entry under key unless it is missing or a
+// marker under one of guards invalidates it.
+func findInCache(cache storage.InMemoryCache[any], invalidations *storage.InvalidationMarkers, key keys.Key, guards []keys.Key) (*storage.TupleIteratorCacheEntry, bool) {
 	res := cache.Get(key)
 	if res == nil {
 		return nil, false
 	}
-	tupleEntry, ok = res.(*storage.TupleIteratorCacheEntry)
+	tupleEntry, ok := res.(*storage.TupleIteratorCacheEntry)
 	if !ok {
 		return nil, false
 	}
 
-	invalid := isInvalidAt(cache, tupleEntry.LastModified, storeKey, invalidEntityKeys)
-	if invalid {
+	if invalidations.Invalidated(tupleEntry.LastModified, guards...) {
 		cache.Delete(key)
 		return nil, false
 	}
@@ -430,8 +411,8 @@ func (c *CachedDatastore) newCachedIterator(
 	)
 	tuplesCacheTotalCounter.WithLabelValues(operation, c.method).Inc()
 
-	invalidStoreKey := storage.InvalidIteratorCacheKey(store)
-	if cacheEntry, ok := findInCache(c.cache, cacheKey, invalidStoreKey, invalidEntityKeys); ok {
+	guards := append([]keys.Key{storage.InvalidIteratorCacheKey(store)}, invalidEntityKeys...)
+	if cacheEntry, ok := findInCache(c.cache, c.invalidations, cacheKey, guards); ok {
 		tuplesCacheHitCounter.WithLabelValues(operation, c.method).Inc()
 		span.SetAttributes(attribute.Bool("cached", true))
 		storage.ObserveCacheEntry(ctx, cacheEntry.LastModified)
@@ -461,37 +442,38 @@ func (c *CachedDatastore) newCachedIterator(
 		operation: operation,
 		method:    c.method,
 		// set an initial fraction capacity to balance constant reallocation and memory usage
-		tuples:            make([]*openfgav1.Tuple, 0, c.maxResultSize/2),
-		cacheKey:          cacheKey,
-		invalidStoreKey:   invalidStoreKey,
-		invalidEntityKeys: invalidEntityKeys,
-		cache:             c.cache,
-		maxResultSize:     c.maxResultSize,
-		ttl:               c.ttl,
-		jitterPercentage:  c.jitterPercentage,
-		initializedAt:     time.Now(),
-		sf:                c.sf,
-		objectType:        objectType,
-		objectID:          objectID,
-		relation:          relation,
-		userType:          userType,
-		wg:                c.wg,
-		logger:            c.logger,
+		tuples:           make([]*openfgav1.Tuple, 0, c.maxResultSize/2),
+		cacheKey:         cacheKey,
+		guards:           guards,
+		cache:            c.cache,
+		invalidations:    c.invalidations,
+		maxResultSize:    c.maxResultSize,
+		ttl:              c.ttl,
+		jitterPercentage: c.jitterPercentage,
+		initializedAt:    time.Now(),
+		sf:               c.sf,
+		objectType:       objectType,
+		objectID:         objectID,
+		relation:         relation,
+		userType:         userType,
+		wg:               c.wg,
+		logger:           c.logger,
 	}, nil
 }
 
 type cachedIterator struct {
-	ctx               context.Context
-	iter              storage.TupleIterator
-	store             string
-	operation         string
-	method            string
-	cacheKey          keys.Key
-	invalidStoreKey   keys.Key
-	invalidEntityKeys []keys.Key
-	cache             storage.InMemoryCache[any]
-	ttl               time.Duration
-	jitterPercentage  uint32
+	ctx       context.Context
+	iter      storage.TupleIterator
+	store     string
+	operation string
+	method    string
+	cacheKey  keys.Key
+	// guards are the marker keys that can invalidate this iterator's entry.
+	guards           []keys.Key
+	cache            storage.InMemoryCache[any]
+	invalidations    *storage.InvalidationMarkers
+	ttl              time.Duration
+	jitterPercentage uint32
 	// initializedAt records when the DB query was initiated. It is used as a
 	// pre-write guard against stale results and as LastModified when flushing
 	// to cache, so that invalidation entries written after the query start are
@@ -593,7 +575,7 @@ func (c *cachedIterator) Stop() {
 		defer c.iter.Stop()
 
 		// if cache is already set by another instance, we don't need to drain the iterator
-		_, ok := findInCache(c.cache, c.cacheKey, c.invalidStoreKey, c.invalidEntityKeys)
+		_, ok := findInCache(c.cache, c.invalidations, c.cacheKey, c.guards)
 		if ok {
 			c.iter.Stop()
 			c.tuples = nil
@@ -601,7 +583,7 @@ func (c *cachedIterator) Stop() {
 		}
 
 		// if there was an invalidation _after_ the initialization, it shouldn't be stored
-		if isInvalidAt(c.cache, c.initializedAt, c.invalidStoreKey, c.invalidEntityKeys) {
+		if c.invalidations.Invalidated(c.initializedAt, c.guards...) {
 			c.iter.Stop()
 			c.tuples = nil
 			return
@@ -709,7 +691,7 @@ func (c *cachedIterator) addToBuffer(t *openfgav1.Tuple) bool {
 	return true
 }
 
-// flush will store copy of buffered tuples into cache and delete invalidEntityKeys from the cache.
+// flush stores a copy of the buffered tuples in the cache.
 func (c *cachedIterator) flush() {
 	if c.tuples == nil || c.ctx.Err() != nil {
 		c.logger.Debug("cachedIterator flush noop due to empty tuples or c.ctx.Err",
@@ -726,6 +708,10 @@ func (c *cachedIterator) flush() {
 	c.tuples = nil
 	c.records = nil
 
-	c.cache.Set(c.cacheKey, &storage.TupleIteratorCacheEntry{Tuples: records, LastModified: c.initializedAt}, storage.JitteredTTL(c.ttl, c.jitterPercentage))
+	ttl := storage.EntryTTL(c.initializedAt, storage.JitteredTTL(c.ttl, c.jitterPercentage))
+	if ttl <= 0 {
+		return
+	}
+	c.cache.Set(c.cacheKey, &storage.TupleIteratorCacheEntry{Tuples: records, LastModified: c.initializedAt}, ttl)
 	tuplesCacheSizeHistogram.WithLabelValues(c.operation, c.method).Observe(float64(len(records)))
 }

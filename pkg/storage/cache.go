@@ -40,7 +40,6 @@ var (
 const (
 	PrefixSubproblemCache      = "SP"
 	PrefixIteratorCache        = "IC"
-	PrefixChangelogCache       = "CC"
 	PrefixInvalidIteratorCache = "IQ"
 )
 
@@ -195,41 +194,9 @@ func (i InMemoryLRUCache[T]) Stop() {
 }
 
 var (
-	_ CacheItem = (*ChangelogCacheEntry)(nil)
-	_ CacheItem = (*InvalidEntityCacheEntry)(nil)
 	_ CacheItem = (*TupleIteratorCacheEntry)(nil)
 	_ CacheItem = (*UserTupleCacheEntry)(nil)
 )
-
-type ChangelogCacheEntry struct {
-	LastModified time.Time // Timestamp of the newest change seen in the store's changelog
-	LastChecked  time.Time // Start of the changelog read that produced this entry
-	// InvalidatedAt is when the controller last observed a new change: Check
-	// results stamped before it may predate that change.
-	InvalidatedAt time.Time
-}
-
-func (c *ChangelogCacheEntry) CacheEntityType() string {
-	return "changelog"
-}
-
-// ChangelogCacheKey returns the key under which a store's changelog metadata is cached.
-func ChangelogCacheKey(storeID string) keys.Key {
-	builder := keys.GetBuilder()
-	defer builder.Close()
-
-	builder.EncodeString(PrefixChangelogCache)
-	builder.EncodeString(storeID)
-	return builder.Key()
-}
-
-type InvalidEntityCacheEntry struct {
-	LastModified time.Time
-}
-
-func (i *InvalidEntityCacheEntry) CacheEntityType() string {
-	return "invalid_entity"
-}
 
 // InvalidIteratorCacheKey returns the store-wide iterator invalidation key.
 func InvalidIteratorCacheKey(storeID string) keys.Key {
@@ -291,17 +258,10 @@ func (u *UserTupleCacheEntry) CacheEntityType() string {
 // in the range [0, baseTTL * jitterPercentage / 100]. Values above 100 are treated as
 // 100. If jitterPercentage is 0 the base TTL is returned unchanged.
 func JitteredTTL(baseTTL time.Duration, jitterPercentage uint32) time.Duration {
-	if baseTTL <= 0 || jitterPercentage == 0 {
+	maxJitter := maxTTLJitter(baseTTL, jitterPercentage)
+	if maxJitter == 0 {
 		return baseTTL
 	}
-
-	if jitterPercentage > 100 {
-		jitterPercentage = 100
-	}
-
-	quotient := baseTTL / 100
-	remainder := baseTTL % 100
-	maxJitter := quotient*time.Duration(jitterPercentage) + remainder*time.Duration(jitterPercentage)/100
 
 	var jitter time.Duration
 	if maxJitter == time.Duration(math.MaxInt64) {
@@ -315,6 +275,26 @@ func JitteredTTL(baseTTL time.Duration, jitterPercentage uint32) time.Duration {
 	}
 
 	return baseTTL + jitter
+}
+
+// MaxJitteredTTL returns the longest TTL JitteredTTL returns for baseTTL.
+func MaxJitteredTTL(baseTTL time.Duration, jitterPercentage uint32) time.Duration {
+	maxJitter := maxTTLJitter(baseTTL, jitterPercentage)
+	if maxJitter == 0 {
+		return baseTTL
+	}
+	if maxJitter > time.Duration(math.MaxInt64)-baseTTL {
+		return time.Duration(math.MaxInt64)
+	}
+	return baseTTL + maxJitter
+}
+
+func maxTTLJitter(baseTTL time.Duration, jitterPercentage uint32) time.Duration {
+	if baseTTL <= 0 || jitterPercentage == 0 {
+		return 0
+	}
+	pct := time.Duration(min(jitterPercentage, 100))
+	return baseTTL/100*pct + baseTTL%100*pct/100
 }
 
 // CheckCacheKey builds the canonical per-Check subproblem cache key.

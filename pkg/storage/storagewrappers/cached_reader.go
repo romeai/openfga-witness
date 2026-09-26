@@ -25,14 +25,15 @@ const DefaultDrainTimeout = 30 * time.Second
 // CachedTupleReader wraps a RelationshipTupleReader to provide iterator caching.
 // Cache is checked BEFORE any database call.
 type CachedTupleReader struct {
-	delegate     storage.RelationshipTupleReader
-	cache        storage.InMemoryCache[any]
-	maxSize      int // Configurable max cache entries
-	ttl          time.Duration
-	drainTimeout time.Duration // Timeout for background drain operations
-	sf           *singleflight.Group
-	wg           *sync.WaitGroup
-	method       string
+	delegate      storage.RelationshipTupleReader
+	cache         storage.InMemoryCache[any]
+	invalidations *storage.InvalidationMarkers
+	maxSize       int // Configurable max cache entries
+	ttl           time.Duration
+	drainTimeout  time.Duration // Timeout for background drain operations
+	sf            *singleflight.Group
+	wg            *sync.WaitGroup
+	method        string
 }
 
 // Ensure CachedTupleReader implements RelationshipTupleReader.
@@ -47,13 +48,15 @@ func WithMethod(method string) CachedTupleReaderOpt {
 	}
 }
 
-// NewCachedTupleReader creates a new CachedTupleReader.
+// NewCachedTupleReader creates a new CachedTupleReader whose entries are
+// valid until invalidated by a marker in invalidations.
 // The drainTimeout parameter controls how long background drain operations can run.
 // If drainTimeout is 0, DefaultDrainTimeout (30s) is used.
 func NewCachedTupleReader(
 	_ context.Context, // Kept for API compatibility, but no longer used
 	delegate storage.RelationshipTupleReader,
 	cache storage.InMemoryCache[any],
+	invalidations *storage.InvalidationMarkers,
 	maxSize int,
 	ttl time.Duration,
 	sf *singleflight.Group,
@@ -75,14 +78,16 @@ func NewCachedTupleReader(
 	if sf == nil {
 		sf = &singleflight.Group{}
 	}
+	invalidations.MustGuard(ttl)
 	c := &CachedTupleReader{
-		delegate:     delegate,
-		cache:        cache,
-		maxSize:      maxSize,
-		ttl:          ttl,
-		drainTimeout: drainTimeout,
-		sf:           sf,
-		wg:           wg,
+		delegate:      delegate,
+		cache:         cache,
+		invalidations: invalidations,
+		maxSize:       maxSize,
+		ttl:           ttl,
+		drainTimeout:  drainTimeout,
+		sf:            sf,
+		wg:            wg,
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -258,42 +263,15 @@ func (c *CachedTupleReader) tryGetFromCache(
 		return nil
 	}
 
-	// Check store-level invalidation
-	if c.isStoreInvalidated(storeID, cached.LastModified) {
+	if c.invalidations.Invalidated(cached.LastModified, storage.InvalidIteratorCacheKey(storeID)) ||
+		c.invalidations.Invalidated(cached.LastModified, invalidEntityKeys...) {
 		c.cache.Delete(cacheKey)
 		return nil
-	}
-
-	// Check entity-level invalidation
-	for _, invalidKey := range invalidEntityKeys {
-		if c.isCacheEntryInvalidated(invalidKey, cached.LastModified) {
-			c.cache.Delete(cacheKey)
-			return nil
-		}
 	}
 
 	tuplesCacheHitCounter.WithLabelValues(operation, c.method).Inc()
 	storage.ObserveCacheEntry(ctx, cached.LastModified)
 	return NewLockFreeCachedIterator(cached.Entries, objectType, relation, cached.Ordered)
-}
-
-// isStoreInvalidated returns whether the entire store's cache has been invalidated since lastModified.
-func (c *CachedTupleReader) isStoreInvalidated(storeID string, lastModified time.Time) bool {
-	return c.isCacheEntryInvalidated(storage.InvalidIteratorCacheKey(storeID), lastModified)
-}
-
-// isCacheEntryInvalidated returns whether an invalidation cache entry at invalidKey was
-// written after a cache entry's lastModified time, indicating the cache entry is stale.
-func (c *CachedTupleReader) isCacheEntryInvalidated(invalidKey keys.Key, lastModified time.Time) bool {
-	entry := c.cache.Get(invalidKey)
-	if entry == nil {
-		return false
-	}
-	invalidEntry, ok := entry.(*storage.InvalidEntityCacheEntry)
-	if !ok {
-		return false
-	}
-	return invalidEntry.LastModified.After(lastModified)
 }
 
 func buildInvalidationKey(storeID, object, relation string) keys.Key {

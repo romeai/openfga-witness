@@ -52,6 +52,7 @@ type CheckQueryV2 struct {
 	datastore                 storage.RelationshipTupleReader
 	datastoreOp               storagewrappers.Operation
 	cache                     storage.InMemoryCache[any]
+	cacheInvalidations        *storage.InvalidationMarkers
 	queryCacheEnabled         bool
 	queryCacheTTL             time.Duration
 	lastCacheInvalidationTime time.Time
@@ -88,9 +89,12 @@ func WithCheckQueryV2Model(m *modelgraph.AuthorizationModelGraph) CheckQueryV2Op
 	}
 }
 
-func WithCheckQueryV2Cache(c storage.InMemoryCache[any]) CheckQueryV2Option {
+// WithCheckQueryV2Cache sets the result cache and the invalidation markers
+// guarding its iterator entries.
+func WithCheckQueryV2Cache(c storage.InMemoryCache[any], invalidations *storage.InvalidationMarkers) CheckQueryV2Option {
 	return func(cmd *CheckQueryV2) {
 		cmd.cache = c
+		cmd.cacheInvalidations = invalidations
 	}
 }
 
@@ -237,6 +241,7 @@ func (q *CheckQueryV2) resolve(ctx context.Context, params *CheckCommandParams) 
 			q.sharedResources.ServerCtx,
 			datastore,
 			q.cache,
+			q.cacheInvalidations,
 			q.sharedResources.V2IteratorCacheMaxSize,
 			q.sharedResources.V2IteratorCacheTTL,
 			q.sharedResources.SingleflightGroup, // SHARED across requests

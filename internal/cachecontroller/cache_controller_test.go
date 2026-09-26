@@ -17,7 +17,6 @@ import (
 
 	"github.com/openfga/openfga/pkg/storage"
 	"github.com/openfga/openfga/pkg/storage/cache/keys"
-	storagetest "github.com/openfga/openfga/pkg/storage/test"
 	"github.com/openfga/openfga/pkg/tuple"
 )
 
@@ -56,7 +55,7 @@ func (d *changelogDatastore) readCount() int {
 	return d.reads
 }
 
-func (d *changelogDatastore) ReadChanges(ctx context.Context, store string, _ storage.ReadChangesFilter, options storage.ReadChangesOptions) ([]*openfgav1.TupleChange, string, error) {
+func (d *changelogDatastore) ReadChanges(ctx context.Context, _ string, _ storage.ReadChangesFilter, options storage.ReadChangesOptions) ([]*openfgav1.TupleChange, string, error) {
 	if d.release != nil {
 		select {
 		case <-d.release:
@@ -67,7 +66,7 @@ func (d *changelogDatastore) ReadChanges(ctx context.Context, store string, _ st
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.reads++
-	if store != storeID || !options.SortDesc || options.Pagination.PageSize <= 0 {
+	if !options.SortDesc || options.Pagination.PageSize <= 0 {
 		return nil, "", errors.New("unexpected ReadChanges arguments")
 	}
 	if d.err != nil {
@@ -91,27 +90,28 @@ func (d *changelogDatastore) ReadChanges(ctx context.Context, store string, _ st
 
 type testController struct {
 	*InMemoryCacheController
-	ds    *changelogDatastore
-	cache *storagetest.MapCache
+	ds      *changelogDatastore
+	markers *storage.InvalidationMarkers
 }
 
 func newTestController(t *testing.T, ttl time.Duration) testController {
+	return newTestControllerWithCacheTTL(t, ttl, time.Hour)
+}
+
+func newTestControllerWithCacheTTL(t *testing.T, ttl, cacheTTL time.Duration) testController {
 	t.Cleanup(func() {
 		goleak.VerifyNone(t)
 	})
 	ds := &changelogDatastore{}
-	cache := storagetest.NewMapCache()
-	c := NewCacheController(ds, cache, ttl, time.Hour, time.Hour).(*InMemoryCacheController)
-	return testController{InMemoryCacheController: c, ds: ds, cache: cache}
+	markers := storage.NewInvalidationMarkers(cacheTTL)
+	c := NewCacheController(ds, markers, ttl, cacheTTL, cacheTTL).(*InMemoryCacheController)
+	return testController{InMemoryCacheController: c, ds: ds, markers: markers}
 }
 
-// invalidatedAt returns when the controller last invalidated key, or the zero time.
-func (c testController) invalidatedAt(key keys.Key) time.Time {
-	entry, _ := c.cache.Get(key).(*storage.InvalidEntityCacheEntry)
-	if entry == nil {
-		return time.Time{}
-	}
-	return entry.LastModified
+// invalidates reports whether a cache entry stamped at stamp and guarded by
+// key is invalid.
+func (c testController) invalidates(key keys.Key, stamp time.Time) bool {
+	return c.markers.Invalidated(stamp, key)
 }
 
 func storeKey() keys.Key {
@@ -149,7 +149,7 @@ func TestInMemoryCacheController_DetermineInvalidationTime(t *testing.T) {
 
 		require.Equal(t, 1, c.ds.readCount())
 		require.False(t, got.Before(before), "entries cached before the first read must not be trusted")
-		require.False(t, c.invalidatedAt(storeKey()).Before(before))
+		require.True(t, c.invalidates(storeKey(), before))
 	})
 
 	t.Run("within_ttl_answers_without_reading", func(t *testing.T) {
@@ -174,8 +174,9 @@ func TestInMemoryCacheController_DetermineInvalidationTime(t *testing.T) {
 
 		require.Equal(t, 2, c.ds.readCount())
 		require.True(t, got.After(written), "a Check result cached before the write must be invalid")
-		require.True(t, c.invalidatedAt(objectRelationKey("document:1", "viewer")).After(written))
-		require.True(t, c.invalidatedAt(userObjectTypeKey("user:anne", "document")).After(written))
+		require.True(t, c.invalidates(objectRelationKey("document:1", "viewer"), written))
+		require.True(t, c.invalidates(userObjectTypeKey("user:anne", "document"), written))
+		require.False(t, c.invalidates(storeKey(), written), "one change must not invalidate the whole store")
 	})
 
 	t.Run("change_is_invalidated_from_when_it_was_observed", func(t *testing.T) {
@@ -212,7 +213,7 @@ func TestInMemoryCacheController_DetermineInvalidationTime(t *testing.T) {
 		time.Sleep(2 * ttl)
 
 		require.Equal(t, first, c.determine(t))
-		require.Equal(t, first, c.invalidatedAt(storeKey()))
+		require.False(t, c.invalidates(storeKey(), first))
 	})
 
 	t.Run("concurrent_callers_share_one_read", func(t *testing.T) {
@@ -259,7 +260,7 @@ func TestInMemoryCacheController_DetermineInvalidationTime(t *testing.T) {
 
 		close(c.ds.release)
 		require.Eventually(t, func() bool {
-			return c.cache.Get(storage.ChangelogCacheKey(storeID)) != nil
+			return c.state(storeID) != nil
 		}, time.Second, time.Millisecond)
 	})
 
@@ -275,7 +276,7 @@ func TestInMemoryCacheController_DetermineInvalidationTime(t *testing.T) {
 		got := c.determine(t)
 
 		require.False(t, got.Before(before))
-		require.False(t, c.invalidatedAt(storeKey()).Before(before))
+		require.True(t, c.invalidates(storeKey(), before))
 	})
 
 	t.Run("read_timeout_invalidates_the_whole_store", func(t *testing.T) {
@@ -291,19 +292,33 @@ func TestInMemoryCacheController_DetermineInvalidationTime(t *testing.T) {
 
 		require.Less(t, time.Since(before), refreshTimeout+500*time.Millisecond)
 		require.False(t, got.Before(before))
-		require.False(t, c.invalidatedAt(storeKey()).Before(before))
+		require.True(t, c.invalidates(storeKey(), before))
 	})
 
-	t.Run("evicted_state_invalidates_the_whole_store", func(t *testing.T) {
-		c := newTestController(t, time.Hour)
+	t.Run("expired_state_invalidates_the_whole_store", func(t *testing.T) {
+		cacheTTL := 20 * time.Millisecond
+		c := newTestControllerWithCacheTTL(t, cacheTTL, cacheTTL)
 		c.ds.write(time.Now().Add(-2*time.Hour), "document:0", "user:bob")
 		c.determine(t)
-		c.cache.Delete(storage.ChangelogCacheKey(storeID))
+		time.Sleep(2 * cacheTTL)
 
 		before := time.Now()
 		got := c.determine(t)
 
 		require.False(t, got.Before(before))
-		require.False(t, c.invalidatedAt(storeKey()).Before(before))
+		require.True(t, c.invalidates(storeKey(), before))
+	})
+
+	t.Run("expired_states_are_swept", func(t *testing.T) {
+		cacheTTL := 20 * time.Millisecond
+		c := newTestControllerWithCacheTTL(t, cacheTTL, cacheTTL)
+		c.determine(t)
+		time.Sleep(2 * cacheTTL)
+		_, err := c.DetermineInvalidationTime(context.Background(), "other")
+		require.NoError(t, err)
+
+		c.mu.RLock()
+		defer c.mu.RUnlock()
+		require.NotContains(t, c.stores, storeID)
 	})
 }

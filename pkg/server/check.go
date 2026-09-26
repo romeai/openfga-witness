@@ -76,7 +76,7 @@ func (s *Server) Check(ctx context.Context, req *openfgav1.CheckRequest) (*openf
 	var v2FallbackErr error
 
 	if s.featureFlagClient.Boolean(serverconfig.ExperimentalWeightedGraphCheck, storeID) {
-		res, err := s.v2Check(ctx, req, s.sharedDatastoreResources.CheckCache, s.sharedDatastoreResources.CacheController, s.authzModelGraphResolver)
+		res, err := s.v2Check(ctx, req, s.sharedDatastoreResources.CheckCache, s.sharedDatastoreResources.CheckCacheInvalidations, s.sharedDatastoreResources.CacheController, s.authzModelGraphResolver)
 
 		// v2Check can return errors that v1 Check wouldn't (e.g. ErrInvalidModel when the weighted graph
 		// can't represent the model). Fallback to v1 on non-timeout errors for backward compatibility.
@@ -332,7 +332,7 @@ func (s *Server) shadowV2Check(ctx context.Context, req *openfgav1.CheckRequest,
 			attribute.String("store_id", req.GetStoreId()),
 		))
 		defer shadowSpan.End()
-		res, err = s.v2Check(newCtx, req, s.sharedDatastoreResources.ShadowCheckCache, s.sharedDatastoreResources.ShadowCacheController, s.shadowAuthzModelGraphResolver)
+		res, err = s.v2Check(newCtx, req, s.sharedDatastoreResources.ShadowCheckCache, s.sharedDatastoreResources.ShadowCheckCacheInvalidations, s.sharedDatastoreResources.ShadowCacheController, s.shadowAuthzModelGraphResolver)
 
 		if res != nil {
 			shadowQueryCount := float64(res.DatastoreQueryCount)
@@ -387,6 +387,7 @@ func (s *Server) v2Check(
 	ctx context.Context,
 	req *openfgav1.CheckRequest,
 	cache storage.InMemoryCache[any],
+	cacheInvalidations *storage.InvalidationMarkers,
 	cacheController cachecontroller.CacheController,
 	modelGraphResolver *modelgraph.AuthorizationModelGraphResolver,
 ) (*commands.CheckResult, error) {
@@ -430,7 +431,7 @@ func (s *Server) v2Check(
 			s.checkDatastoreThrottleDuration,
 		),
 		commands.WithCheckQueryV2Model(mg),
-		commands.WithCheckQueryV2Cache(cache),
+		commands.WithCheckQueryV2Cache(cache, cacheInvalidations),
 		commands.WithCheckQueryV2QueryCacheEnabled(s.cacheSettings.ShouldCacheCheckQueries()),
 		commands.WithCheckQueryV2QueryCacheTTL(s.cacheSettings.CheckQueryCacheTTL),
 		commands.WithCheckQueryV2Planner(s.planner),
