@@ -379,7 +379,7 @@ func TestInMemoryCacheController_IncrementalChangelog(t *testing.T) {
 		c.determine(t)
 		time.Sleep(2 * ttl)
 
-		const writes = 250
+		const writes = 2*changelogPageSize + 50
 		written := time.Now()
 		for i := range writes {
 			c.ds.write(written.Add(time.Duration(i)*time.Microsecond), "document:"+strconv.Itoa(i), "user:anne")
@@ -388,7 +388,7 @@ func TestInMemoryCacheController_IncrementalChangelog(t *testing.T) {
 		got := c.determine(t)
 
 		require.True(t, got.After(cachedBeforeObserved))
-		require.False(t, c.invalidatesStore(cachedBeforeObserved), "changes within the page budget must not invalidate the whole store")
+		require.False(t, c.invalidatesStore(cachedBeforeObserved), "changes within the change budget must not invalidate the whole store")
 		for i := range writes {
 			require.True(t, c.invalidates(objectRelationKey("document:"+strconv.Itoa(i)), cachedBeforeObserved), "document:%d", i)
 		}
@@ -444,7 +444,36 @@ func TestInMemoryCacheController_IncrementalChangelog(t *testing.T) {
 		require.False(t, c.invalidatesStore(cachedBeforeObserved))
 	})
 
-	t.Run("exhausted_page_budget_invalidates_the_whole_store_and_is_logged", func(t *testing.T) {
+	t.Run("changes_re_read_within_the_margin_count_against_a_budget_sized_for_them", func(t *testing.T) {
+		c := newTestController(t, ttl)
+		c.determine(t)
+		time.Sleep(2 * ttl)
+		processed := c.changeBudget / 2
+		written := time.Now()
+		for i := range processed {
+			c.ds.write(written.Add(time.Duration(i)*time.Microsecond), "document:old"+strconv.Itoa(i), "user:anne")
+		}
+		c.determine(t)
+		time.Sleep(2 * ttl)
+
+		written = time.Now()
+		for i := range c.changeBudget - processed {
+			c.ds.write(written.Add(time.Duration(i)*time.Microsecond), "document:new"+strconv.Itoa(i), "user:anne")
+		}
+		cachedBeforeObserved := time.Now()
+		c.determine(t)
+
+		require.False(t, c.invalidatesStore(cachedBeforeObserved), "a read of the TTL plus the margin at the budget rate must not invalidate the whole store")
+		require.True(t, c.invalidates(objectRelationKey("document:new0"), cachedBeforeObserved))
+		require.False(t, c.invalidates(objectRelationKey("document:old0"), cachedBeforeObserved), "processed changes must not be invalidated again")
+	})
+
+	t.Run("budget_covers_the_ttl_and_the_margin_at_the_budget_rate", func(t *testing.T) {
+		c := newTestController(t, 10*time.Second)
+		require.Equal(t, 7000, c.changeBudget)
+	})
+
+	t.Run("exhausted_change_budget_invalidates_the_whole_store_and_is_logged", func(t *testing.T) {
 		c := newTestController(t, ttl)
 		core, logs := observer.New(zap.WarnLevel)
 		c.logger = &logger.ZapLogger{Logger: zap.New(core)}
@@ -453,7 +482,7 @@ func TestInMemoryCacheController_IncrementalChangelog(t *testing.T) {
 		budgetsBefore := storeInvalidations(t, storage.StoreInvalidationBudget)
 
 		written := time.Now()
-		for i := range maxChangelogPages*changelogPageSize + 1 {
+		for i := range c.changeBudget + 1 {
 			c.ds.write(written.Add(time.Duration(i)*time.Microsecond), "document:"+strconv.Itoa(i), "user:anne")
 		}
 		cachedBeforeObserved := time.Now()
@@ -461,9 +490,10 @@ func TestInMemoryCacheController_IncrementalChangelog(t *testing.T) {
 
 		require.True(t, got.After(cachedBeforeObserved))
 		require.True(t, c.invalidatesStore(cachedBeforeObserved))
-		require.Equal(t, 1, logs.FilterMessageSnippet("page budget").Len())
+		require.Equal(t, 1, logs.FilterMessageSnippet("change budget").Len())
 		require.InDelta(t, budgetsBefore+1, storeInvalidations(t, storage.StoreInvalidationBudget), 0)
-		require.Equal(t, 1+maxChangelogPages, c.ds.readCount())
+		pagesToExceed := (c.changeBudget + changelogPageSize) / changelogPageSize
+		require.Equal(t, 1+pagesToExceed, c.ds.readCount(), "the read stops at the first change past the budget")
 	})
 
 	t.Run("changes_past_the_marker_limit_invalidate_the_whole_store", func(t *testing.T) {

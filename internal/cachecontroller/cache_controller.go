@@ -57,15 +57,11 @@ var (
 	}, []string{"invalidation_type"})
 )
 
-// refreshTimeout bounds one read of a store's changelog, and so how long a
-// request waits for it.
+// refreshTimeout bounds one read of a store's changelog, datastore
+// connection waits included, and so how long a request waits for it.
 const refreshTimeout = time.Second
 
-const changelogPageSize = 100
-
-// maxChangelogPages bounds the changes one read invalidates one by one; past
-// it the read invalidates the whole store instead.
-const maxChangelogPages = 20
+const changelogPageSize = 1000
 
 // changelogSettleMargin is how far before the previous read's start each read
 // goes back. A change's changelog position and timestamp are taken before its
@@ -74,9 +70,16 @@ const maxChangelogPages = 20
 // skew between OpenFGA and the datastore.
 const changelogSettleMargin = time.Minute
 
-// errChangelogPageBudget reports more changes since the previous read than
-// maxChangelogPages hold.
-var errChangelogPageBudget = errors.New("changelog page budget exhausted")
+// changelogBudgetRate is the sustained write rate, in changes per second, up
+// to which a store read at least once per TTL has its changes invalidated one
+// by one. Each read reads every change back to changelogSettleMargin before
+// the previous read's start, the ones it already processed included, so its
+// change budget is this rate over the TTL plus the margin.
+const changelogBudgetRate = 100
+
+// errChangelogBudget reports more changes back to a read's horizon than its
+// change budget, the already processed ones within the margin included.
+var errChangelogBudget = errors.New("changelog change budget exhausted")
 
 type CacheController interface {
 	// DetermineInvalidationTime returns the time before which the store's
@@ -126,7 +129,11 @@ type InMemoryCacheController struct {
 	// stateTTL is how long a store's state is kept after its last read. A
 	// store without state is invalidated as a whole on its next read, so the
 	// state only needs to outlive the cache entries it guards to spare them.
-	stateTTL  time.Duration
+	stateTTL time.Duration
+	// changeBudget is the most changes one read processes; a read that finds
+	// more invalidates the whole store instead.
+	changeBudget int
+
 	refreshes singleflight.Group
 	logger    logger.Logger
 
@@ -181,12 +188,13 @@ func NewCacheController(
 		panic("cache controller has no invalidation markers to write")
 	}
 	c := &InMemoryCacheController{
-		ds:       ds,
-		markers:  markers,
-		ttl:      ttl,
-		stateTTL: max(ttl, queryCacheTTL, iteratorCacheTTL),
-		logger:   logger.NewNoopLogger(),
-		stores:   map[string]*storeState{},
+		ds:           ds,
+		markers:      markers,
+		ttl:          ttl,
+		stateTTL:     max(ttl, queryCacheTTL, iteratorCacheTTL),
+		changeBudget: int((ttl + changelogSettleMargin) * changelogBudgetRate / time.Second),
+		logger:       logger.NewNoopLogger(),
+		stores:       map[string]*storeState{},
 	}
 
 	for _, opt := range opts {
@@ -257,7 +265,7 @@ func (c *InMemoryCacheController) DetermineInvalidationTime(ctx context.Context,
 
 // refresh reads the changes to the store's changelog since the previous
 // read and invalidates the cache entries each may have made stale. It always
-// yields a state: when the changes cannot all be read (error, timeout, page
+// yields a state: when the changes cannot all be read (error, timeout, change
 // budget), or no previous state says which changes the caches have seen, it
 // invalidates all of the store's cache entries, which needs no read at all.
 func (c *InMemoryCacheController) refresh(storeID string, caller trace.Link) *storeState {
@@ -278,9 +286,9 @@ func (c *InMemoryCacheController) refresh(storeID string, caller trace.Link) *st
 	st := &storeState{checkedAt: start, invalidatedAt: observedAt, processed: map[changeKey]int{}}
 	invalidationType := "full"
 	switch {
-	case errors.Is(err, errChangelogPageBudget):
-		c.logger.Warn("cache controller found more changes than its changelog page budget; invalidating every cache entry of the store",
-			zap.String("store_id", storeID), zap.Int("page_budget", maxChangelogPages), zap.Int("page_size", changelogPageSize))
+	case errors.Is(err, errChangelogBudget):
+		c.logger.Warn("cache controller found more changes than its changelog change budget; invalidating every cache entry of the store",
+			zap.String("store_id", storeID), zap.Int("change_budget", c.changeBudget))
 		c.markers.InvalidateStore(storeID, observedAt, storage.StoreInvalidationBudget)
 	case err != nil:
 		reason := storage.StoreInvalidationError
@@ -349,12 +357,12 @@ func (st *storeState) unprocessed(changes []*openfgav1.TupleChange) []*openfgav1
 }
 
 // readChangesSince returns the store's changes with timestamps at or after
-// horizon, newest first. It fails with errChangelogPageBudget when they do
-// not fit maxChangelogPages.
+// horizon, newest first. It fails with errChangelogBudget when there are more
+// than changeBudget of them.
 func (c *InMemoryCacheController) readChangesSince(ctx context.Context, storeID string, horizon time.Time) ([]*openfgav1.TupleChange, error) {
 	var changes []*openfgav1.TupleChange
 	from := ""
-	for range maxChangelogPages {
+	for {
 		opts := storage.ReadChangesOptions{
 			SortDesc:   true,
 			Pagination: storage.PaginationOptions{PageSize: changelogPageSize, From: from},
@@ -373,6 +381,9 @@ func (c *InMemoryCacheController) readChangesSince(ctx context.Context, storeID 
 			if change.GetTimestamp().AsTime().Before(horizon) {
 				return changes, nil
 			}
+			if len(changes) == c.changeBudget {
+				return nil, errChangelogBudget
+			}
 			changes = append(changes, change)
 		}
 		if token == "" || token == from {
@@ -380,5 +391,4 @@ func (c *InMemoryCacheController) readChangesSince(ctx context.Context, storeID 
 		}
 		from = token
 	}
-	return nil, errChangelogPageBudget
 }
