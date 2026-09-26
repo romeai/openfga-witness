@@ -35,3 +35,17 @@ jobs:
         run: |
           go test ./witness/... -timeout 120s -count=1
           go test ./witness_tests/ -timeout 600s -count=1
+
+  # The upstream logic patches listed in AGENTS.md; the postgres and mysql
+  # suites run against testcontainers on the runner's Docker.
+  patch-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: './go.mod'
+          cache-dependency-path: './go.sum'
+      - name: Patched package tests
+        run: go test ./pkg/storage/... ./internal/graph/... ./internal/check/... ./internal/cachecontroller/... ./pkg/server/ -timeout 1500s -count=1
