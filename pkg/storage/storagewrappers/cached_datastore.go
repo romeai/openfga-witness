@@ -286,6 +286,7 @@ func (c *CachedDatastore) ReadUserTuple(
 		if !isInvalidAt(c.cache, entry.LastModified, invalidStoreKey, invalidEntityKeys) {
 			tuplesCacheHitCounter.WithLabelValues(storage.OperationReadUserTuple, c.method).Inc()
 			span.SetAttributes(attribute.Bool("cached", true))
+			storage.ObserveCacheEntry(ctx, entry.LastModified)
 			if entry.Tuple == nil {
 				return nil, storage.ErrNotFound
 			}
@@ -433,6 +434,7 @@ func (c *CachedDatastore) newCachedIterator(
 	if cacheEntry, ok := findInCache(c.cache, cacheKey, invalidStoreKey, invalidEntityKeys); ok {
 		tuplesCacheHitCounter.WithLabelValues(operation, c.method).Inc()
 		span.SetAttributes(attribute.Bool("cached", true))
+		storage.ObserveCacheEntry(ctx, cacheEntry.LastModified)
 
 		staticIter := storage.NewStaticIterator[*storage.TupleRecord](cacheEntry.Tuples)
 		currentIteratorCacheCount.WithLabelValues("true").Inc()

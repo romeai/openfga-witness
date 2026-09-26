@@ -629,3 +629,131 @@ func TestCheckCacheKey_NonEmpty(t *testing.T) {
 	result := storage.CheckCacheKey(req.GetStoreID(), tk.GetObject(), tk.GetRelation(), tk.GetUser(), req.GetInvariantCacheKey())
 	require.NotEmpty(t, result)
 }
+
+func TestCachedCheckResolverStampsEntriesAtResolutionStart(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t)
+	})
+	ctx := context.Background()
+
+	newRequest := func(object string, lastInvalidation time.Time) *ResolveCheckRequest {
+		return &ResolveCheckRequest{
+			StoreID:                   "12",
+			AuthorizationModelID:      "33",
+			TupleKey:                  tuple.NewTupleKey(object, "reader", "user:XYZ"),
+			RequestMetadata:           NewCheckRequestMetadata(),
+			LastCacheInvalidationTime: lastInvalidation,
+		}
+	}
+	newResolver := func(t *testing.T) (*CachedCheckResolver, *MockCheckResolver) {
+		dut, err := NewCachedCheckResolver(WithCacheTTL(time.Hour))
+		require.NoError(t, err)
+		t.Cleanup(dut.Close)
+		delegate := NewMockCheckResolver(gomock.NewController(t))
+		dut.SetDelegate(delegate)
+		return dut, delegate
+	}
+	cachedEntry := func(t *testing.T, dut *CachedCheckResolver, req *ResolveCheckRequest) *CheckResponseCacheEntry {
+		t.Helper()
+		tk := req.GetTupleKey()
+		entry, ok := dut.cache.Get(storage.CheckCacheKey(req.GetStoreID(), tk.GetObject(), tk.GetRelation(), tk.GetUser(), req.GetInvariantCacheKey())).(*CheckResponseCacheEntry)
+		require.True(t, ok)
+		return entry
+	}
+
+	t.Run("a_write_committed_during_resolution_invalidates_the_entry", func(t *testing.T) {
+		dut, delegate := newResolver(t)
+		var writtenAt time.Time
+		gomock.InOrder(
+			delegate.EXPECT().ResolveCheck(gomock.Any(), gomock.Any()).
+				DoAndReturn(func(context.Context, *ResolveCheckRequest) (*ResolveCheckResponse, error) {
+					// The resolution read its data before this write committed.
+					writtenAt = time.Now()
+					return &ResolveCheckResponse{Allowed: false}, nil
+				}),
+			delegate.EXPECT().ResolveCheck(gomock.Any(), gomock.Any()).Return(&ResolveCheckResponse{Allowed: true}, nil),
+		)
+
+		resp, err := dut.ResolveCheck(ctx, newRequest("document:abc", time.Time{}))
+		require.NoError(t, err)
+		require.False(t, resp.GetAllowed())
+		require.True(t, cachedEntry(t, dut, newRequest("document:abc", time.Time{})).LastModified.Before(writtenAt))
+
+		// The cache controller has now seen the write.
+		resp, err = dut.ResolveCheck(ctx, newRequest("document:abc", writtenAt))
+		require.NoError(t, err)
+		require.True(t, resp.GetAllowed())
+	})
+
+	t.Run("the_entry_is_no_newer_than_the_oldest_cache_entry_consumed", func(t *testing.T) {
+		dut, delegate := newResolver(t)
+		consumed := time.Now().Add(-time.Hour)
+		gomock.InOrder(
+			delegate.EXPECT().ResolveCheck(gomock.Any(), gomock.Any()).
+				DoAndReturn(func(ctx context.Context, _ *ResolveCheckRequest) (*ResolveCheckResponse, error) {
+					storage.ObserveCacheEntry(ctx, consumed)
+					return &ResolveCheckResponse{Allowed: false}, nil
+				}),
+			delegate.EXPECT().ResolveCheck(gomock.Any(), gomock.Any()).Return(&ResolveCheckResponse{Allowed: true}, nil),
+		)
+
+		resp, err := dut.ResolveCheck(ctx, newRequest("document:abc", time.Time{}))
+		require.NoError(t, err)
+		require.False(t, resp.GetAllowed())
+		require.True(t, cachedEntry(t, dut, newRequest("document:abc", time.Time{})).LastModified.Equal(consumed))
+
+		// A write newer than the consumed entry, which invalidates it, invalidates the result too.
+		resp, err = dut.ResolveCheck(ctx, newRequest("document:abc", consumed.Add(time.Second)))
+		require.NoError(t, err)
+		require.True(t, resp.GetAllowed())
+	})
+
+	t.Run("a_nested_cache_hit_ages_the_enclosing_entry", func(t *testing.T) {
+		dut, delegate := newResolver(t)
+		child := newRequest("document:child", time.Time{})
+		childTK := child.GetTupleKey()
+		consumed := time.Now().Add(-time.Hour)
+		dut.cache.Set(
+			storage.CheckCacheKey(child.GetStoreID(), childTK.GetObject(), childTK.GetRelation(), childTK.GetUser(), child.GetInvariantCacheKey()),
+			&CheckResponseCacheEntry{LastModified: consumed, CheckResponse: &ResolveCheckResponse{Allowed: true}},
+			time.Hour,
+		)
+		delegate.EXPECT().ResolveCheck(gomock.Any(), gomock.Any()).
+			DoAndReturn(func(ctx context.Context, _ *ResolveCheckRequest) (*ResolveCheckResponse, error) {
+				return dut.ResolveCheck(ctx, child)
+			})
+
+		outerCtx, outer := storage.ContextWithCacheFreshness(ctx)
+		resp, err := dut.ResolveCheck(outerCtx, newRequest("document:parent", time.Time{}))
+		require.NoError(t, err)
+		require.True(t, resp.GetAllowed())
+		require.True(t, cachedEntry(t, dut, newRequest("document:parent", time.Time{})).LastModified.Equal(consumed))
+		require.True(t, outer.Stamp(time.Now()).Equal(consumed))
+	})
+
+	t.Run("a_nested_resolution_is_stamped_at_its_own_start", func(t *testing.T) {
+		dut, delegate := newResolver(t)
+		child := newRequest("document:child", time.Time{})
+		var parentStarted, childStarted time.Time
+		gomock.InOrder(
+			delegate.EXPECT().ResolveCheck(gomock.Any(), gomock.Any()).
+				DoAndReturn(func(ctx context.Context, _ *ResolveCheckRequest) (*ResolveCheckResponse, error) {
+					parentStarted = time.Now()
+					return dut.ResolveCheck(ctx, child)
+				}),
+			delegate.EXPECT().ResolveCheck(gomock.Any(), gomock.Any()).
+				DoAndReturn(func(context.Context, *ResolveCheckRequest) (*ResolveCheckResponse, error) {
+					childStarted = time.Now()
+					return &ResolveCheckResponse{Allowed: true}, nil
+				}),
+		)
+
+		_, err := dut.ResolveCheck(ctx, newRequest("document:parent", time.Time{}))
+		require.NoError(t, err)
+		parentStamp := cachedEntry(t, dut, newRequest("document:parent", time.Time{})).LastModified
+		childStamp := cachedEntry(t, dut, child).LastModified
+		require.True(t, parentStamp.Before(parentStarted))
+		require.False(t, childStamp.Before(parentStarted))
+		require.True(t, childStamp.Before(childStarted))
+	})
+}

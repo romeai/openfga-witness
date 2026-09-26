@@ -1097,6 +1097,62 @@ func TestReadUserTuple(t *testing.T) {
 	})
 }
 
+func TestCachedDatastoreHitsAgeTheEnclosingComputation(t *testing.T) {
+	ctx := context.Background()
+	t.Cleanup(func() {
+		goleak.VerifyNone(t)
+	})
+
+	storeID := ulid.Make().String()
+	consumed := time.Now().Add(-time.Hour)
+	setup := func(t *testing.T) (*CachedDatastore, *mocks.MockOpenFGADatastore, storage.InMemoryCache[any]) {
+		cache, err := storage.NewInMemoryLRUCache[any]()
+		require.NoError(t, err)
+		t.Cleanup(cache.Stop)
+		inner := mocks.NewMockOpenFGADatastore(gomock.NewController(t))
+		return NewCachedDatastore(ctx, inner, cache, 10, time.Hour, &singleflight.Group{}, &sync.WaitGroup{}), inner, cache
+	}
+
+	t.Run("iterator_hit", func(t *testing.T) {
+		ds, _, cache := setup(t)
+		filter := storage.ReadFilter{Object: "document:1", Relation: "viewer"}
+		cache.Set(storage.ReadKey(storeID, filter), &storage.TupleIteratorCacheEntry{
+			Tuples:       []*storage.TupleRecord{{UserObjectType: "user", UserObjectID: "anne"}},
+			LastModified: consumed,
+		}, time.Hour)
+
+		trackedCtx, freshness := storage.ContextWithCacheFreshness(ctx)
+		iter, err := ds.Read(trackedCtx, storeID, filter, storage.ReadOptions{})
+		require.NoError(t, err)
+		defer iter.Stop()
+		require.IsType(t, &cachedTupleIterator{}, iter)
+		require.True(t, freshness.Stamp(time.Now()).Equal(consumed))
+	})
+
+	t.Run("user_tuple_hit", func(t *testing.T) {
+		ds, _, cache := setup(t)
+		filter := storage.ReadUserTupleFilter{Object: "document:1", Relation: "viewer", User: "user:anne"}
+		cache.Set(storage.ReadUserTupleKey(storeID, filter), &storage.UserTupleCacheEntry{LastModified: consumed}, time.Hour)
+
+		trackedCtx, freshness := storage.ContextWithCacheFreshness(ctx)
+		_, err := ds.ReadUserTuple(trackedCtx, storeID, filter, storage.ReadUserTupleOptions{})
+		require.ErrorIs(t, err, storage.ErrNotFound)
+		require.True(t, freshness.Stamp(time.Now()).Equal(consumed))
+	})
+
+	t.Run("user_tuple_miss_does_not_age", func(t *testing.T) {
+		ds, inner, _ := setup(t)
+		filter := storage.ReadUserTupleFilter{Object: "document:1", Relation: "viewer", User: "user:anne"}
+		inner.EXPECT().ReadUserTuple(gomock.Any(), storeID, filter, storage.ReadUserTupleOptions{}).Return(nil, storage.ErrNotFound)
+
+		start := time.Now()
+		trackedCtx, freshness := storage.ContextWithCacheFreshness(ctx)
+		_, err := ds.ReadUserTuple(trackedCtx, storeID, filter, storage.ReadUserTupleOptions{})
+		require.ErrorIs(t, err, storage.ErrNotFound)
+		require.True(t, freshness.Stamp(start).Equal(start))
+	})
+}
+
 func TestDatastoreIteratorError(t *testing.T) {
 	ctx := context.Background()
 	t.Cleanup(func() {

@@ -500,6 +500,50 @@ func TestCachedTupleReader_Read_CacheHit(t *testing.T) {
 	require.ErrorIs(t, err, storage.ErrIteratorDone)
 }
 
+func TestCachedTupleReader_HitsAgeTheEnclosingComputation(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t)
+	})
+
+	ctx := context.Background()
+	storeID := ulid.Make().String()
+	consumed := time.Now().Add(-time.Hour)
+
+	cache, err := storage.NewInMemoryLRUCache[any]()
+	require.NoError(t, err)
+	defer cache.Stop()
+	reader := NewCachedTupleReader(ctx, mocks.NewMockRelationshipTupleReader(gomock.NewController(t)), cache, 1000, time.Hour, &singleflight.Group{}, &sync.WaitGroup{}, 30*time.Second)
+
+	entry := &V2IteratorCacheEntry{Entries: []MinimalCacheEntry{{ObjectID: "1", User: "folder:a"}}, LastModified: consumed}
+	readFilter := storage.ReadFilter{Object: "document:1", Relation: "parent", User: "folder:"}
+	usersetFilter := storage.ReadUsersetTuplesFilter{Object: "document:1", Relation: "viewer"}
+	startingWithUserFilter := storage.ReadStartingWithUserFilter{ObjectType: "document", Relation: "viewer", UserFilter: []*openfgav1.ObjectRelation{{Object: "user:anne"}}}
+	cache.Set(storage.ReadKey(storeID, readFilter), entry, time.Hour)
+	cache.Set(storage.ReadUsersetTuplesKey(storeID, usersetFilter), entry, time.Hour)
+	cache.Set(storage.ReadStartingWithUserKey(storeID, startingWithUserFilter), entry, time.Hour)
+
+	for name, read := range map[string]func(context.Context) (storage.TupleIterator, error){
+		"read": func(ctx context.Context) (storage.TupleIterator, error) {
+			return reader.Read(ctx, storeID, readFilter, storage.ReadOptions{})
+		},
+		"read_userset_tuples": func(ctx context.Context) (storage.TupleIterator, error) {
+			return reader.ReadUsersetTuples(ctx, storeID, usersetFilter, storage.ReadUsersetTuplesOptions{})
+		},
+		"read_starting_with_user": func(ctx context.Context) (storage.TupleIterator, error) {
+			return reader.ReadStartingWithUser(ctx, storeID, startingWithUserFilter, storage.ReadStartingWithUserOptions{})
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			trackedCtx, freshness := storage.ContextWithCacheFreshness(ctx)
+			iter, err := read(trackedCtx)
+			require.NoError(t, err)
+			defer iter.Stop()
+			require.IsType(t, &LockFreeCachedIterator{}, iter)
+			require.True(t, freshness.Stamp(time.Now()).Equal(consumed))
+		})
+	}
+}
+
 func TestCachedTupleReader_Read_HigherConsistency(t *testing.T) {
 	t.Cleanup(func() {
 		goleak.VerifyNone(t)

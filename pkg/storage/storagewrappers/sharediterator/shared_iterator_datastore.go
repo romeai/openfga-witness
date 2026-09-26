@@ -93,6 +93,11 @@ type storageItem struct {
 	// err is an error that is set when the iterator creation fails.
 	err error
 
+	// dataAsOf bounds how fresh the iterator's tuples are. A request that
+	// attaches to an iterator another request created consumes them like a
+	// cache entry (see [storage.CacheFreshness]).
+	dataAsOf time.Time
+
 	admissionDuration time.Duration
 
 	idleDuration time.Duration
@@ -279,10 +284,13 @@ func (sf *IteratorDatastore) ReadStartingWithUser(
 
 	// The producer function is called to create a new shared iterator when it is first accessed.
 	newStorageItem.producer = func() (*sharedIterator, error) {
-		it, err := sf.RelationshipTupleReader.ReadStartingWithUser(ctx, store, filter, options)
+		producedAt := time.Now()
+		producerCtx, freshness := storage.ContextWithCacheFreshness(ctx)
+		it, err := sf.RelationshipTupleReader.ReadStartingWithUser(producerCtx, store, filter, options)
 		if err != nil {
 			return nil, err
 		}
+		newStorageItem.dataAsOf = freshness.Stamp(producedAt)
 
 		si := newSharedIterator(it)
 
@@ -320,6 +328,10 @@ func (sf *IteratorDatastore) ReadStartingWithUser(
 	if it == nil {
 		sharedIteratorBypassed.WithLabelValues(storage.OperationReadStartingWithUser).Inc()
 		return sf.RelationshipTupleReader.ReadStartingWithUser(ctx, store, filter, options)
+	}
+
+	if !created {
+		storage.ObserveCacheEntry(ctx, item.dataAsOf)
 	}
 
 	sharedIteratorQueryHistogram.WithLabelValues(
@@ -360,10 +372,13 @@ func (sf *IteratorDatastore) ReadUsersetTuples(
 
 	// The producer function is called to create a new shared iterator when it is first accessed.
 	newStorageItem.producer = func() (*sharedIterator, error) {
-		it, err := sf.RelationshipTupleReader.ReadUsersetTuples(ctx, store, filter, options)
+		producedAt := time.Now()
+		producerCtx, freshness := storage.ContextWithCacheFreshness(ctx)
+		it, err := sf.RelationshipTupleReader.ReadUsersetTuples(producerCtx, store, filter, options)
 		if err != nil {
 			return nil, err
 		}
+		newStorageItem.dataAsOf = freshness.Stamp(producedAt)
 
 		si := newSharedIterator(it)
 
@@ -403,6 +418,10 @@ func (sf *IteratorDatastore) ReadUsersetTuples(
 		return sf.RelationshipTupleReader.ReadUsersetTuples(ctx, store, filter, options)
 	}
 
+	if !created {
+		storage.ObserveCacheEntry(ctx, item.dataAsOf)
+	}
+
 	sharedIteratorQueryHistogram.WithLabelValues(
 		storage.OperationReadUsersetTuples, sf.method, strconv.FormatBool(!created),
 	).Observe(float64(time.Since(start).Milliseconds()))
@@ -439,10 +458,13 @@ func (sf *IteratorDatastore) Read(
 
 	// The producer function is called to create a new shared iterator when it is first accessed.
 	newStorageItem.producer = func() (*sharedIterator, error) {
-		it, err := sf.RelationshipTupleReader.Read(ctx, store, filter, options)
+		producedAt := time.Now()
+		producerCtx, freshness := storage.ContextWithCacheFreshness(ctx)
+		it, err := sf.RelationshipTupleReader.Read(producerCtx, store, filter, options)
 		if err != nil {
 			return nil, err
 		}
+		newStorageItem.dataAsOf = freshness.Stamp(producedAt)
 
 		si := newSharedIterator(it)
 
@@ -480,6 +502,10 @@ func (sf *IteratorDatastore) Read(
 	if it == nil {
 		sharedIteratorBypassed.WithLabelValues(storage.OperationRead).Inc()
 		return sf.RelationshipTupleReader.Read(ctx, store, filter, options)
+	}
+
+	if !created {
+		storage.ObserveCacheEntry(ctx, item.dataAsOf)
 	}
 
 	sharedIteratorQueryHistogram.WithLabelValues(

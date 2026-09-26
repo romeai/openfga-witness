@@ -164,6 +164,7 @@ func (c *CachedCheckResolver) ResolveCheck(
 			span.SetAttributes(attribute.Bool("cached", isValid))
 			if isValid {
 				metrics.CacheHitCounter.Inc()
+				storage.ObserveCacheEntry(ctx, res.LastModified)
 				// return a copy to avoid races across goroutines
 				return res.CheckResponse.clone(), nil
 			}
@@ -179,7 +180,9 @@ func (c *CachedCheckResolver) ResolveCheck(
 	}
 
 	// not in cache, or consistency options experimental flag is set, and consistency param set to HIGHER_CONSISTENCY
-	resp, err := c.delegate.ResolveCheck(ctx, req)
+	start := time.Now()
+	resolveCtx, freshness := storage.ContextWithCacheFreshness(ctx)
+	resp, err := c.delegate.ResolveCheck(resolveCtx, req)
 	if err != nil {
 		telemetry.TraceError(span, err)
 		return nil, err
@@ -199,6 +202,6 @@ func (c *CachedCheckResolver) ResolveCheck(
 
 	clonedResp := resp.clone()
 
-	c.cache.Set(cacheKey, &CheckResponseCacheEntry{LastModified: time.Now(), CheckResponse: clonedResp}, storage.JitteredTTL(c.cacheTTL, c.jitterPercentage))
+	c.cache.Set(cacheKey, &CheckResponseCacheEntry{LastModified: freshness.Stamp(start), CheckResponse: clonedResp}, storage.JitteredTTL(c.cacheTTL, c.jitterPercentage))
 	return resp, nil
 }

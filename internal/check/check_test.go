@@ -2394,7 +2394,7 @@ func TestIsCached(t *testing.T) {
 			lastCacheInvalidationTime: time.Now().Add(-time.Hour),
 		}
 
-		res, ok := resolver.isCached(openfgav1.ConsistencyPreference_HIGHER_CONSISTENCY, testKey)
+		res, ok := resolver.isCached(context.Background(), openfgav1.ConsistencyPreference_HIGHER_CONSISTENCY, testKey)
 		require.False(t, ok)
 		require.Nil(t, res)
 	})
@@ -2417,7 +2417,7 @@ func TestIsCached(t *testing.T) {
 			lastCacheInvalidationTime: time.Time{},
 		}
 
-		res, ok := resolver.isCached(openfgav1.ConsistencyPreference_MINIMIZE_LATENCY, testKey)
+		res, ok := resolver.isCached(context.Background(), openfgav1.ConsistencyPreference_MINIMIZE_LATENCY, testKey)
 		require.True(t, ok)
 		require.Equal(t, expectedResponse, res)
 	})
@@ -2434,7 +2434,7 @@ func TestIsCached(t *testing.T) {
 			lastCacheInvalidationTime: time.Time{},
 		}
 
-		res, ok := resolver.isCached(openfgav1.ConsistencyPreference_MINIMIZE_LATENCY, testKey)
+		res, ok := resolver.isCached(context.Background(), openfgav1.ConsistencyPreference_MINIMIZE_LATENCY, testKey)
 		require.False(t, ok)
 		require.Nil(t, res)
 	})
@@ -2451,7 +2451,7 @@ func TestIsCached(t *testing.T) {
 			lastCacheInvalidationTime: time.Now().Add(-time.Hour),
 		}
 
-		res, ok := resolver.isCached(openfgav1.ConsistencyPreference_MINIMIZE_LATENCY, testKey)
+		res, ok := resolver.isCached(context.Background(), openfgav1.ConsistencyPreference_MINIMIZE_LATENCY, testKey)
 		require.False(t, ok)
 		require.Nil(t, res)
 	})
@@ -2468,7 +2468,7 @@ func TestIsCached(t *testing.T) {
 			lastCacheInvalidationTime: time.Now().Add(-time.Hour),
 		}
 
-		res, ok := resolver.isCached(openfgav1.ConsistencyPreference_MINIMIZE_LATENCY, testKey)
+		res, ok := resolver.isCached(context.Background(), openfgav1.ConsistencyPreference_MINIMIZE_LATENCY, testKey)
 		require.False(t, ok)
 		require.Nil(t, res)
 	})
@@ -2492,7 +2492,7 @@ func TestIsCached(t *testing.T) {
 			lastCacheInvalidationTime: invalidationTime,
 		}
 
-		res, ok := resolver.isCached(openfgav1.ConsistencyPreference_MINIMIZE_LATENCY, testKey)
+		res, ok := resolver.isCached(context.Background(), openfgav1.ConsistencyPreference_MINIMIZE_LATENCY, testKey)
 		require.False(t, ok)
 		require.Nil(t, res)
 	})
@@ -2517,7 +2517,7 @@ func TestIsCached(t *testing.T) {
 			lastCacheInvalidationTime: invalidationTime,
 		}
 
-		res, ok := resolver.isCached(openfgav1.ConsistencyPreference_MINIMIZE_LATENCY, testKey)
+		res, ok := resolver.isCached(context.Background(), openfgav1.ConsistencyPreference_MINIMIZE_LATENCY, testKey)
 		require.True(t, ok)
 		require.Equal(t, expectedResponse, res)
 	})
@@ -2542,7 +2542,7 @@ func TestIsCached(t *testing.T) {
 			lastCacheInvalidationTime: invalidationTime,
 		}
 
-		res, ok := resolver.isCached(openfgav1.ConsistencyPreference_MINIMIZE_LATENCY, testKey)
+		res, ok := resolver.isCached(context.Background(), openfgav1.ConsistencyPreference_MINIMIZE_LATENCY, testKey)
 		require.True(t, ok)
 		require.Equal(t, expectedResponse, res)
 	})
@@ -2566,7 +2566,7 @@ func TestIsCached(t *testing.T) {
 			lastCacheInvalidationTime: time.Now().Add(-time.Hour),
 		}
 
-		res, ok := resolver.isCached(openfgav1.ConsistencyPreference_UNSPECIFIED, testKey)
+		res, ok := resolver.isCached(context.Background(), openfgav1.ConsistencyPreference_UNSPECIFIED, testKey)
 		require.True(t, ok)
 		require.Equal(t, expectedResponse, res)
 	})
@@ -6367,6 +6367,194 @@ func TestCheck_MultiBranchRecursionOnSameRelation(t *testing.T) {
 			res, err := resolver.ResolveCheck(context.Background(), req)
 			require.NoError(t, err)
 			require.Equal(t, tt.expected.GetAllowed(), res.GetAllowed())
+		})
+	}
+}
+
+// recordingStrategy runs onCall with the strategy's context, then answers false.
+type recordingStrategy struct {
+	onCall func(context.Context)
+}
+
+func (s *recordingStrategy) Userset(ctx context.Context, _ *Request, _ *authzGraph.WeightedAuthorizationModelEdge, _ storage.TupleKeyIterator, _ *sync.Map) (*Response, error) {
+	s.onCall(ctx)
+	return &Response{Allowed: false}, nil
+}
+
+func (s *recordingStrategy) TTU(ctx context.Context, _ *Request, _ *authzGraph.WeightedAuthorizationModelEdge, _ storage.TupleKeyIterator, _ *sync.Map) (*Response, error) {
+	s.onCall(ctx)
+	return &Response{Allowed: false}, nil
+}
+
+func TestResolverStampsEdgeEntriesAtEvaluationStart(t *testing.T) {
+	storeID := ulid.Make().String()
+	consumed := time.Now().Add(-time.Hour)
+
+	newCache := func(t *testing.T) storage.InMemoryCache[any] {
+		cache, err := storage.NewInMemoryLRUCache[any]()
+		require.NoError(t, err)
+		t.Cleanup(cache.Stop)
+		return cache
+	}
+	cachedEntry := func(t *testing.T, cache storage.InMemoryCache[any], key keys.Key) *ResponseCacheEntry {
+		t.Helper()
+		entry, ok := cache.Get(key).(*ResponseCacheEntry)
+		require.True(t, ok)
+		return entry
+	}
+
+	unionModel, err := modelgraph.New(testutils.MustTransformDSLToProtoWithID(`
+		model
+		  schema 1.1
+		type user
+		type group
+		  relations
+		    define member: [user] or admin
+		    define admin: [user]
+	`))
+	require.NoError(t, err)
+	unionRequest, err := NewRequest(RequestParams{
+		StoreID:  storeID,
+		Model:    unionModel,
+		TupleKey: tuple.NewTupleKey("group:1", "member", "user:maria"),
+	})
+	require.NoError(t, err)
+	memberNode, ok := unionModel.GetNodeByID("group#member")
+	require.True(t, ok)
+	memberEdges, ok := unionModel.GetEdgesFromNode(memberNode)
+	require.True(t, ok)
+	unionEdges, ok := unionModel.GetEdgesFromNode(memberEdges[0].GetTo())
+	require.True(t, ok)
+	adminEdges, ok := unionModel.GetEdgesFromNode(unionEdges[1].GetTo())
+	require.True(t, ok)
+	// ResolveUnion flattens the union into its terminal edges.
+	memberDirectKey := EdgeCacheKey(unionRequest, unionEdges[0])
+	adminDirectKey := EdgeCacheKey(unionRequest, adminEdges[0])
+
+	t.Run("union_edge_write_during_evaluation_invalidates_the_entry", func(t *testing.T) {
+		cache := newCache(t)
+		mockDatastore := mocks.NewMockRelationshipTupleReader(gomock.NewController(t))
+		var writtenAt sync.Map
+		mockDatastore.EXPECT().ReadUserTuple(gomock.Any(), storeID, gomock.Any(), gomock.Any()).
+			DoAndReturn(func(_ context.Context, _ string, filter storage.ReadUserTupleFilter, _ storage.ReadUserTupleOptions) (*openfgav1.Tuple, error) {
+				// The evaluation read its data before this write committed.
+				writtenAt.Store(filter.Relation, time.Now())
+				return nil, storage.ErrNotFound
+			}).Times(2)
+
+		resolver := New(Config{Model: unionModel, Datastore: mockDatastore, Cache: cache, CacheTTL: time.Hour, ConcurrencyLimit: 10})
+		res, err := resolver.ResolveCheck(context.Background(), unionRequest)
+		require.NoError(t, err)
+		require.False(t, res.GetAllowed())
+
+		memberWrite, ok := writtenAt.Load("member")
+		require.True(t, ok)
+		require.True(t, cachedEntry(t, cache, memberDirectKey).LastModified.Before(memberWrite.(time.Time)))
+
+		// The cache controller has now seen the write.
+		invalidated := New(Config{Model: unionModel, Datastore: mockDatastore, Cache: cache, CacheTTL: time.Hour, ConcurrencyLimit: 10, LastCacheInvalidationTime: memberWrite.(time.Time)})
+		_, hit := invalidated.isCached(context.Background(), openfgav1.ConsistencyPreference_UNSPECIFIED, memberDirectKey)
+		require.False(t, hit)
+	})
+
+	t.Run("union_edges_inherit_only_their_own_consumed_entries", func(t *testing.T) {
+		cache := newCache(t)
+		mockDatastore := mocks.NewMockRelationshipTupleReader(gomock.NewController(t))
+		mockDatastore.EXPECT().ReadUserTuple(gomock.Any(), storeID, gomock.Any(), gomock.Any()).
+			DoAndReturn(func(ctx context.Context, _ string, filter storage.ReadUserTupleFilter, _ storage.ReadUserTupleOptions) (*openfgav1.Tuple, error) {
+				if filter.Relation == "admin" {
+					storage.ObserveCacheEntry(ctx, consumed)
+				}
+				return nil, storage.ErrNotFound
+			}).Times(2)
+
+		resolver := New(Config{Model: unionModel, Datastore: mockDatastore, Cache: cache, CacheTTL: time.Hour, ConcurrencyLimit: 10})
+		start := time.Now()
+		outerCtx, outer := storage.ContextWithCacheFreshness(context.Background())
+		res, err := resolver.ResolveCheck(outerCtx, unionRequest)
+		require.NoError(t, err)
+		require.False(t, res.GetAllowed())
+
+		require.True(t, cachedEntry(t, cache, adminDirectKey).LastModified.Equal(consumed))
+		require.False(t, cachedEntry(t, cache, memberDirectKey).LastModified.Before(start))
+		require.True(t, outer.Stamp(time.Now()).Equal(consumed))
+	})
+
+	t.Run("a_cache_hit_ages_the_enclosing_computation", func(t *testing.T) {
+		cache := newCache(t)
+		cache.Set(memberDirectKey, &ResponseCacheEntry{Res: &Response{Allowed: false}, LastModified: consumed}, time.Hour)
+		cache.Set(adminDirectKey, &ResponseCacheEntry{Res: &Response{Allowed: false}, LastModified: consumed.Add(time.Minute)}, time.Hour)
+		resolver := New(Config{Model: unionModel, Datastore: mocks.NewMockRelationshipTupleReader(gomock.NewController(t)), Cache: cache, CacheTTL: time.Hour, ConcurrencyLimit: 10})
+
+		outerCtx, outer := storage.ContextWithCacheFreshness(context.Background())
+		res, err := resolver.ResolveCheck(outerCtx, unionRequest)
+		require.NoError(t, err)
+		require.False(t, res.GetAllowed())
+		require.True(t, outer.Stamp(time.Now()).Equal(consumed))
+	})
+
+	recursiveModel, err := modelgraph.New(testutils.MustTransformDSLToProtoWithID(`
+		model
+		  schema 1.1
+		type user
+		type group
+		  relations
+		    define member: [user] or member from parent
+		    define parent: [group]
+	`))
+	require.NoError(t, err)
+	recursiveRequest, err := NewRequest(RequestParams{
+		StoreID:  storeID,
+		Model:    recursiveModel,
+		TupleKey: tuple.NewTupleKey("group:1", "member", "user:maria"),
+	})
+	require.NoError(t, err)
+	recursiveNode, ok := recursiveModel.GetNodeByID("group#member")
+	require.True(t, ok)
+	recursiveEdge, ok := recursiveModel.CanApplyRecursion(recursiveNode, "user", true)
+	require.True(t, ok)
+	recursiveKey := EdgeCacheKey(recursiveRequest, recursiveEdge)
+
+	for name, onCall := range map[string]func(*testing.T, *time.Time) func(context.Context){
+		"recursive_edge_write_during_evaluation_invalidates_the_entry": func(_ *testing.T, writtenAt *time.Time) func(context.Context) {
+			return func(context.Context) { *writtenAt = time.Now() }
+		},
+		"recursive_edge_inherits_consumed_entries": func(_ *testing.T, writtenAt *time.Time) func(context.Context) {
+			return func(ctx context.Context) {
+				storage.ObserveCacheEntry(ctx, consumed)
+				*writtenAt = consumed.Add(time.Nanosecond)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cache := newCache(t)
+			mockDatastore := mocks.NewMockRelationshipTupleReader(gomock.NewController(t))
+			mockDatastore.EXPECT().Read(gomock.Any(), storeID, gomock.Any(), gomock.Any()).
+				Return(storage.NewStaticTupleIterator(nil), nil).AnyTimes()
+			mockDatastore.EXPECT().ReadUserTuple(gomock.Any(), storeID, gomock.Any(), gomock.Any()).
+				Return(nil, storage.ErrNotFound).AnyTimes()
+
+			var writtenAt time.Time
+			strategy := &recordingStrategy{onCall: onCall(t, &writtenAt)}
+			resolver := New(Config{
+				Model:            recursiveModel,
+				Datastore:        mockDatastore,
+				Cache:            cache,
+				CacheTTL:         time.Hour,
+				ConcurrencyLimit: 10,
+				Planner:          planner.New(&planner.Config{}),
+				Strategies: map[string]Strategy{
+					DefaultStrategyName:   strategy,
+					WeightTwoStrategyName: strategy,
+					RecursiveStrategyName: strategy,
+				},
+			})
+
+			res, err := resolver.ResolveRecursive(context.Background(), recursiveRequest, recursiveEdge, &sync.Map{}, false)
+			require.NoError(t, err)
+			require.False(t, res.GetAllowed())
+			require.False(t, writtenAt.IsZero(), "the recursive strategy did not run")
+			require.True(t, cachedEntry(t, cache, recursiveKey).LastModified.Before(writtenAt))
 		})
 	}
 }

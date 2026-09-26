@@ -155,7 +155,7 @@ func (r *Resolver) ResolveCheck(ctx context.Context, req *Request) (*Response, e
 	return res, nil
 }
 
-func (r *Resolver) isCached(consistency openfgav1.ConsistencyPreference, key keys.Key) (*Response, bool) {
+func (r *Resolver) isCached(ctx context.Context, consistency openfgav1.ConsistencyPreference, key keys.Key) (*Response, bool) {
 	if consistency == openfgav1.ConsistencyPreference_HIGHER_CONSISTENCY {
 		return nil, false
 	}
@@ -173,6 +173,7 @@ func (r *Resolver) isCached(consistency openfgav1.ConsistencyPreference, key key
 		return nil, false
 	}
 	metrics.CacheHitCounter.Inc()
+	storage.ObserveCacheEntry(ctx, res.LastModified)
 	return res.Res, true
 }
 
@@ -239,7 +240,7 @@ func (r *Resolver) ResolveUnionEdges(ctx context.Context, req *Request, edges []
 
 		expectedMessages++
 
-		if res, ok := r.isCached(req.GetConsistency(), id); ok {
+		if res, ok := r.isCached(ctx, req.GetConsistency(), id); ok {
 			span.AddEvent("cache_hit", trace.WithAttributes(
 				attribute.Int64("edge.type", int64(edge.GetEdgeType())),
 				attribute.String("edge.to", edge.GetTo().GetUniqueLabel()),
@@ -266,9 +267,11 @@ func (r *Resolver) ResolveUnionEdges(ctx context.Context, req *Request, edges []
 
 	for _, evaluation := range evaluations {
 		pool.Go(func() error {
-			res, err := r.ResolveEdge(ctx, req, evaluation.edge, visited)
+			start := time.Now()
+			edgeCtx, freshness := storage.ContextWithCacheFreshness(ctx)
+			res, err := r.ResolveEdge(edgeCtx, req, evaluation.edge, visited)
 			if err == nil && ctx.Err() == nil {
-				entry := &ResponseCacheEntry{Res: res, LastModified: time.Now()}
+				entry := &ResponseCacheEntry{Res: res, LastModified: freshness.Stamp(start)}
 				r.cache.Set(evaluation.id, entry, r.cacheTTL)
 			}
 
@@ -547,7 +550,7 @@ func (r *Resolver) ResolveRecursive(ctx context.Context, req *Request, edge *aut
 	go func() {
 		cacheKey := EdgeCacheKey(req, edge)
 
-		if res, ok := r.isCached(req.GetConsistency(), cacheKey); ok {
+		if res, ok := r.isCached(ctx, req.GetConsistency(), cacheKey); ok {
 			concurrency.TrySendThroughChannel(ctx, ResponseMsg{Res: res}, out)
 			return
 		}
@@ -555,17 +558,19 @@ func (r *Resolver) ResolveRecursive(ctx context.Context, req *Request, edge *aut
 		var err error
 		var res *Response
 
+		start := time.Now()
+		edgeCtx, freshness := storage.ContextWithCacheFreshness(ctx)
 		switch edge.GetEdgeType() {
 		case authzGraph.DirectEdge:
-			res, err = r.resolveRecursiveUserset(ctx, req, edge, visited, canApplyOptimization)
+			res, err = r.resolveRecursiveUserset(edgeCtx, req, edge, visited, canApplyOptimization)
 		case authzGraph.TTUEdge:
-			res, err = r.resolveRecursiveTTU(ctx, req, edge, visited, canApplyOptimization)
+			res, err = r.resolveRecursiveTTU(edgeCtx, req, edge, visited, canApplyOptimization)
 		default:
 			res, err = nil, ErrPanicRequest
 		}
 
 		if err == nil && ctx.Err() == nil {
-			entry := &ResponseCacheEntry{Res: res, LastModified: time.Now()}
+			entry := &ResponseCacheEntry{Res: res, LastModified: freshness.Stamp(start)}
 			r.cache.Set(cacheKey, entry, r.cacheTTL)
 		}
 		concurrency.TrySendThroughChannel(ctx, ResponseMsg{Res: res, Err: err}, out)

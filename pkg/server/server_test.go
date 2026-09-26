@@ -7,6 +7,7 @@ import (
 	"math"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -2405,6 +2406,90 @@ func TestCheckWithCachedUserTuple(t *testing.T) {
 	require.NotNil(t, cachedUserTuple().Tuple)
 	require.NotNil(t, cache.Get(storage.InvalidIteratorByObjectRelationCacheKey(storeID, "document:1", "viewer")))
 	require.Nil(t, cache.Get(storage.InvalidIteratorCacheKey(storeID)))
+}
+
+// writeDuringReadDatastore commits one write while serving a direct-tuple
+// read on the written object, and answers with the state before the write.
+type writeDuringReadDatastore struct {
+	storage.OpenFGADatastore
+	t       *testing.T
+	write   *openfgav1.TupleKey
+	written atomic.Bool
+}
+
+func (d *writeDuringReadDatastore) ReadUserTuple(ctx context.Context, store string, filter storage.ReadUserTupleFilter, options storage.ReadUserTupleOptions) (*openfgav1.Tuple, error) {
+	if filter.Object == d.write.GetObject() && d.written.CompareAndSwap(false, true) {
+		require.NoError(d.t, d.Write(ctx, store, nil, []*openfgav1.TupleKey{d.write}))
+		return nil, storage.ErrNotFound
+	}
+	return d.OpenFGADatastore.ReadUserTuple(ctx, store, filter, options)
+}
+
+// TestCheckQueryCacheWriteDuringResolution covers the v1 check-query cache
+// against a write that commits while a Check resolves: the cached result
+// misses the write, and once the cache controller reports it the result
+// must be recomputed instead of served for the rest of its TTL.
+func TestCheckQueryCacheWriteDuringResolution(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t)
+	})
+
+	ctx := context.Background()
+	storeID := ulid.Make().String()
+	modelID := ulid.Make().String()
+
+	model := parser.MustTransformDSLToProto(`
+		model
+			schema 1.1
+		type user
+		type document
+			relations
+				define viewer: [user]
+	`)
+	model.Id = modelID
+
+	ds := &writeDuringReadDatastore{
+		OpenFGADatastore: memory.New(),
+		t:                t,
+		write:            tuple.NewTupleKey("document:1", "viewer", "user:anne"),
+	}
+	require.NoError(t, ds.WriteAuthorizationModel(ctx, storeID, model))
+	require.NoError(t, ds.Write(ctx, storeID, nil, []*openfgav1.TupleKey{tuple.NewTupleKey("document:0", "viewer", "user:bob")}))
+
+	cache := storageTest.NewMapCache()
+	s := MustNewServerWithOpts(
+		WithContext(ctx),
+		WithDatastore(ds),
+		WithCheckCacheLimit(100),
+		WithCheckCache(cache),
+		WithCheckQueryCacheEnabled(true),
+		WithCheckQueryCacheTTL(time.Hour),
+		WithCacheControllerEnabled(true),
+		WithCacheControllerTTL(1*time.Nanosecond),
+	)
+	t.Cleanup(s.Close)
+
+	check := func(object string) bool {
+		resp, err := s.Check(ctx, &openfgav1.CheckRequest{
+			StoreId:              storeID,
+			TupleKey:             tuple.NewCheckRequestTupleKey(object, "viewer", "user:anne"),
+			AuthorizationModelId: modelID,
+		})
+		require.NoError(t, err)
+		return resp.GetAllowed()
+	}
+
+	require.False(t, check("document:0"))
+	require.Eventually(t, func() bool {
+		return cache.Get(storage.ChangelogCacheKey(storeID)) != nil
+	}, 2*time.Second, 10*time.Millisecond)
+
+	require.False(t, check("document:1"))
+	require.True(t, ds.written.Load())
+
+	require.Eventually(t, func() bool {
+		return check("document:1")
+	}, 2*time.Second, 10*time.Millisecond)
 }
 
 func TestBatchCheckWithCachedIterator(t *testing.T) {

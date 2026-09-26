@@ -1931,3 +1931,102 @@ func TestSharedIterator_ManyTuples(t *testing.T) {
 		}
 	})
 }
+
+func TestSharedIteratorAttachAgesTheEnclosingComputation(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t)
+	})
+	storeID := ulid.Make().String()
+	consumed := time.Now().Add(-time.Hour)
+	tuples := []*openfgav1.Tuple{{Key: tuple.NewTupleKey("document:1", "viewer", "user:anne")}}
+
+	type read func(context.Context, *IteratorDatastore) (storage.TupleIterator, error)
+	type expect func(*mocks.MockOpenFGADatastore, func(context.Context))
+	methods := map[string]struct {
+		read   read
+		expect expect
+	}{
+		"read": {
+			read: func(ctx context.Context, ds *IteratorDatastore) (storage.TupleIterator, error) {
+				return ds.Read(ctx, storeID, storage.ReadFilter{Object: "document:1", Relation: "viewer"}, storage.ReadOptions{})
+			},
+			expect: func(m *mocks.MockOpenFGADatastore, onRead func(context.Context)) {
+				m.EXPECT().Read(gomock.Any(), storeID, gomock.Any(), gomock.Any()).
+					DoAndReturn(func(ctx context.Context, _ string, _ storage.ReadFilter, _ storage.ReadOptions) (storage.TupleIterator, error) {
+						onRead(ctx)
+						return storage.NewStaticTupleIterator(tuples), nil
+					})
+			},
+		},
+		"read_userset_tuples": {
+			read: func(ctx context.Context, ds *IteratorDatastore) (storage.TupleIterator, error) {
+				return ds.ReadUsersetTuples(ctx, storeID, storage.ReadUsersetTuplesFilter{Object: "document:1", Relation: "viewer"}, storage.ReadUsersetTuplesOptions{})
+			},
+			expect: func(m *mocks.MockOpenFGADatastore, onRead func(context.Context)) {
+				m.EXPECT().ReadUsersetTuples(gomock.Any(), storeID, gomock.Any(), gomock.Any()).
+					DoAndReturn(func(ctx context.Context, _ string, _ storage.ReadUsersetTuplesFilter, _ storage.ReadUsersetTuplesOptions) (storage.TupleIterator, error) {
+						onRead(ctx)
+						return storage.NewStaticTupleIterator(tuples), nil
+					})
+			},
+		},
+		"read_starting_with_user": {
+			read: func(ctx context.Context, ds *IteratorDatastore) (storage.TupleIterator, error) {
+				return ds.ReadStartingWithUser(ctx, storeID, storage.ReadStartingWithUserFilter{
+					ObjectType: "document",
+					Relation:   "viewer",
+					UserFilter: []*openfgav1.ObjectRelation{{Object: "user:anne"}},
+				}, storage.ReadStartingWithUserOptions{})
+			},
+			expect: func(m *mocks.MockOpenFGADatastore, onRead func(context.Context)) {
+				m.EXPECT().ReadStartingWithUser(gomock.Any(), storeID, gomock.Any(), gomock.Any()).
+					DoAndReturn(func(ctx context.Context, _ string, _ storage.ReadStartingWithUserFilter, _ storage.ReadStartingWithUserOptions) (storage.TupleIterator, error) {
+						onRead(ctx)
+						return storage.NewStaticTupleIterator(tuples), nil
+					})
+			},
+		},
+	}
+
+	for name, method := range methods {
+		t.Run(name+"/attacher_inherits_the_creators_consumed_entries", func(t *testing.T) {
+			inner := mocks.NewMockOpenFGADatastore(gomock.NewController(t))
+			method.expect(inner, func(ctx context.Context) { storage.ObserveCacheEntry(ctx, consumed) })
+			ds := NewSharedIteratorDatastore(inner, NewSharedIteratorDatastoreStorage())
+
+			creatorCtx, creator := storage.ContextWithCacheFreshness(context.Background())
+			created, err := method.read(creatorCtx, ds)
+			require.NoError(t, err)
+			defer created.Stop()
+			require.True(t, creator.Stamp(time.Now()).Equal(consumed))
+
+			attacherCtx, attacher := storage.ContextWithCacheFreshness(context.Background())
+			attached, err := method.read(attacherCtx, ds)
+			require.NoError(t, err)
+			defer attached.Stop()
+			require.True(t, attacher.Stamp(time.Now()).Equal(consumed))
+		})
+
+		t.Run(name+"/attacher_is_no_fresher_than_the_creation", func(t *testing.T) {
+			inner := mocks.NewMockOpenFGADatastore(gomock.NewController(t))
+			var readAt time.Time
+			method.expect(inner, func(context.Context) { readAt = time.Now() })
+			ds := NewSharedIteratorDatastore(inner, NewSharedIteratorDatastoreStorage())
+
+			creatorCtx, creator := storage.ContextWithCacheFreshness(context.Background())
+			created, err := method.read(creatorCtx, ds)
+			require.NoError(t, err)
+			defer created.Stop()
+			creatorStart := time.Now()
+			require.True(t, creator.Stamp(creatorStart).Equal(creatorStart))
+
+			attacherCtx, attacher := storage.ContextWithCacheFreshness(context.Background())
+			attachStart := time.Now()
+			attached, err := method.read(attacherCtx, ds)
+			require.NoError(t, err)
+			defer attached.Stop()
+			stamp := attacher.Stamp(attachStart)
+			require.True(t, stamp.Before(readAt), "attacher stamped %v, the shared query ran at %v", stamp, readAt)
+		})
+	}
+}

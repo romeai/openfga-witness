@@ -125,7 +125,7 @@ func (c *CachedTupleReader) ReadUsersetTuples(
 	tuplesCacheTotalCounter.WithLabelValues("ReadUsersetTuples", c.method).Inc()
 
 	// CHECK CACHE FIRST - before any database call
-	if iter := c.tryGetFromCache(cacheKey, storeID, objectType, filter.Relation, "ReadUsersetTuples", []keys.Key{invalidEntityKey}); iter != nil {
+	if iter := c.tryGetFromCache(ctx, cacheKey, storeID, objectType, filter.Relation, "ReadUsersetTuples", []keys.Key{invalidEntityKey}); iter != nil {
 		span.SetAttributes(attribute.Bool("cached", true))
 		return iter, nil
 	}
@@ -175,7 +175,7 @@ func (c *CachedTupleReader) Read(
 	// Track total cache operations (before cache check, like V1)
 	tuplesCacheTotalCounter.WithLabelValues("Read", c.method).Inc()
 
-	if iter := c.tryGetFromCache(cacheKey, storeID, objectType, filter.Relation, "Read", []keys.Key{invalidEntityKey}); iter != nil {
+	if iter := c.tryGetFromCache(ctx, cacheKey, storeID, objectType, filter.Relation, "Read", []keys.Key{invalidEntityKey}); iter != nil {
 		span.SetAttributes(attribute.Bool("cached", true))
 		return iter, nil
 	}
@@ -223,7 +223,7 @@ func (c *CachedTupleReader) ReadStartingWithUser(
 	// Track total cache operations (before cache check, like V1)
 	tuplesCacheTotalCounter.WithLabelValues("ReadStartingWithUser", c.method).Inc()
 
-	if iter := c.tryGetFromCache(cacheKey, storeID, filter.ObjectType, filter.Relation, "ReadStartingWithUser", invalidEntityKeys); iter != nil {
+	if iter := c.tryGetFromCache(ctx, cacheKey, storeID, filter.ObjectType, filter.Relation, "ReadStartingWithUser", invalidEntityKeys); iter != nil {
 		span.SetAttributes(attribute.Bool("cached", true))
 		return iter, nil
 	}
@@ -244,6 +244,7 @@ func (c *CachedTupleReader) ReadStartingWithUser(
 // tryGetFromCache checks for cache hit with invalidation support.
 // Returns LockFreeCachedIterator if found and not invalidated.
 func (c *CachedTupleReader) tryGetFromCache(
+	ctx context.Context,
 	cacheKey keys.Key, storeID, objectType, relation, operation string,
 	invalidEntityKeys []keys.Key,
 ) storage.TupleIterator {
@@ -272,6 +273,7 @@ func (c *CachedTupleReader) tryGetFromCache(
 	}
 
 	tuplesCacheHitCounter.WithLabelValues(operation, c.method).Inc()
+	storage.ObserveCacheEntry(ctx, cached.LastModified)
 	return NewLockFreeCachedIterator(cached.Entries, objectType, relation, cached.Ordered)
 }
 
