@@ -187,6 +187,15 @@ func ReadUsersetTuplesKey(store string, filter ReadUsersetTuplesFilter) keys.Key
 
 // ReadKey builds the iterator cache key for Read queries.
 func ReadKey(store string, filter ReadFilter) keys.Key {
+	return objectRelationUserKey("READ", store, filter)
+}
+
+// ReadUserTupleKey builds the iterator cache key for ReadUserTuple point lookups.
+func ReadUserTupleKey(store string, filter ReadUserTupleFilter) keys.Key {
+	return objectRelationUserKey("USERTUPLE", store, filter)
+}
+
+func objectRelationUserKey(operation string, store string, filter ReadFilter) keys.Key {
 	builder := keys.GetBuilder()
 	defer builder.Close()
 
@@ -202,7 +211,7 @@ func ReadKey(store string, filter ReadFilter) keys.Key {
 	builder.Reset()
 
 	builder.EncodeString(PrefixIteratorCache)
-	builder.EncodeString("READ")
+	builder.EncodeString(operation)
 	builder.EncodeString(store)
 	builder.EncodeString(filter.Object)
 	builder.EncodeString(filter.Relation)

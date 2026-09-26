@@ -263,6 +263,40 @@ func TestReadKey(t *testing.T) {
 	})
 }
 
+func TestReadUserTupleKey(t *testing.T) {
+	store := ulid.Make().String()
+	base := ReadUserTupleFilter{Object: "document:1", Relation: "viewer", User: "user:alice"}
+
+	t.Run("valid_hex", func(t *testing.T) {
+		requireValidHex(t, ReadUserTupleKey(store, base))
+	})
+
+	t.Run("distinct_from_the_read_key_of_the_same_filter", func(t *testing.T) {
+		require.NotEqual(t, ReadKey(store, base), ReadUserTupleKey(store, base))
+	})
+
+	t.Run("every_component_is_part_of_the_key", func(t *testing.T) {
+		for name, other := range map[string]ReadUserTupleFilter{
+			"user":       {Object: base.Object, Relation: base.Relation, User: "user:bob"},
+			"relation":   {Object: base.Object, Relation: "editor", User: base.User},
+			"object":     {Object: "document:2", Relation: base.Relation, User: base.User},
+			"conditions": {Object: base.Object, Relation: base.Relation, User: base.User, Conditions: []string{""}},
+		} {
+			t.Run(name, func(t *testing.T) {
+				require.NotEqual(t, ReadUserTupleKey(store, base), ReadUserTupleKey(store, other))
+			})
+		}
+		require.NotEqual(t, ReadUserTupleKey(store, base), ReadUserTupleKey(ulid.Make().String(), base))
+	})
+
+	t.Run("identical_inputs_produce_identical_keys", func(t *testing.T) {
+		key1 := ReadUserTupleKey(store, base)
+		key2 := ReadUserTupleKey(store, base)
+
+		require.Equal(t, key1, key2)
+	})
+}
+
 func TestReadUsersetTuplesKey(t *testing.T) {
 	store := ulid.Make().String()
 	base := ReadUsersetTuplesFilter{

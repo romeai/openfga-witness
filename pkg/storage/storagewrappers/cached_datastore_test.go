@@ -13,6 +13,7 @@ import (
 	"go.uber.org/goleak"
 	"go.uber.org/mock/gomock"
 	"golang.org/x/sync/singleflight"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/testing/protocmp"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -868,6 +869,231 @@ func TestRead(t *testing.T) {
 		if diff := cmp.Diff(tuples, actual, cmpOpts...); diff != "" {
 			t.Fatalf("mismatch (-want +got):\n%s", diff)
 		}
+	})
+}
+
+func TestReadUserTuple(t *testing.T) {
+	ctx := context.Background()
+	t.Cleanup(func() {
+		goleak.VerifyNone(t)
+	})
+
+	storeID := ulid.Make().String()
+	tk := tuple.NewTupleKey("document:1", "viewer", "user:anne")
+	stored := &openfgav1.Tuple{Key: tk, Timestamp: timestamppb.New(time.Now())}
+	filter := storage.ReadUserTupleFilter{Object: tk.GetObject(), Relation: tk.GetRelation(), User: tk.GetUser()}
+	defaultOpts := storage.ReadUserTupleOptions{}
+	higherOpts := storage.ReadUserTupleOptions{
+		Consistency: storage.ConsistencyOptions{Preference: openfgav1.ConsistencyPreference_HIGHER_CONSISTENCY},
+	}
+	objectRelationMarker := storage.InvalidIteratorByObjectRelationCacheKey(storeID, tk.GetObject(), tk.GetRelation())
+	storeMarker := storage.InvalidIteratorCacheKey(storeID)
+	ttl := 5 * time.Hour
+
+	setup := func(t *testing.T) (*CachedDatastore, *mocks.MockOpenFGADatastore, storage.InMemoryCache[any]) {
+		cache, err := storage.NewInMemoryLRUCache[any]()
+		require.NoError(t, err)
+		t.Cleanup(cache.Stop)
+		inner := mocks.NewMockOpenFGADatastore(gomock.NewController(t))
+		return NewCachedDatastore(ctx, inner, cache, 10, ttl, &singleflight.Group{}, &sync.WaitGroup{}), inner, cache
+	}
+	requireFound := func(t *testing.T, got *openfgav1.Tuple, err error) {
+		t.Helper()
+		require.NoError(t, err)
+		if diff := cmp.Diff(stored, got, protocmp.Transform()); diff != "" {
+			t.Fatalf("mismatch (-want +got):\n%s", diff)
+		}
+	}
+	markAt := func(cache storage.InMemoryCache[any], marker keys.Key, at time.Time) {
+		cache.Set(marker, &storage.InvalidEntityCacheEntry{LastModified: at}, ttl)
+	}
+
+	t.Run("found_is_served_from_cache_stamped_at_query_start", func(t *testing.T) {
+		ds, inner, cache := setup(t)
+		var queriedAfter time.Time
+		inner.EXPECT().ReadUserTuple(gomock.Any(), storeID, filter, defaultOpts).
+			DoAndReturn(func(context.Context, string, storage.ReadUserTupleFilter, storage.ReadUserTupleOptions) (*openfgav1.Tuple, error) {
+				queriedAfter = time.Now()
+				return stored, nil
+			}).Times(1)
+
+		before := time.Now()
+		got, err := ds.ReadUserTuple(ctx, storeID, filter, defaultOpts)
+		requireFound(t, got, err)
+
+		entry, ok := cache.Get(storage.ReadUserTupleKey(storeID, filter)).(*storage.UserTupleCacheEntry)
+		require.True(t, ok)
+		require.False(t, entry.LastModified.Before(before))
+		require.False(t, entry.LastModified.After(queriedAfter))
+
+		got, err = ds.ReadUserTuple(ctx, storeID, filter, defaultOpts)
+		requireFound(t, got, err)
+	})
+
+	t.Run("hits_return_independent_copies", func(t *testing.T) {
+		ds, inner, _ := setup(t)
+		inner.EXPECT().ReadUserTuple(gomock.Any(), storeID, filter, defaultOpts).Return(proto.Clone(stored), nil).Times(1)
+
+		first, err := ds.ReadUserTuple(ctx, storeID, filter, defaultOpts)
+		require.NoError(t, err)
+		first.GetKey().User = "user:mallory"
+
+		got, err := ds.ReadUserTuple(ctx, storeID, filter, defaultOpts)
+		requireFound(t, got, err)
+		got.GetKey().User = "user:mallory"
+
+		got, err = ds.ReadUserTuple(ctx, storeID, filter, defaultOpts)
+		requireFound(t, got, err)
+	})
+
+	t.Run("not_found_is_served_from_cache", func(t *testing.T) {
+		ds, inner, _ := setup(t)
+		inner.EXPECT().ReadUserTuple(gomock.Any(), storeID, filter, defaultOpts).Return(nil, storage.ErrNotFound).Times(1)
+
+		for range 2 {
+			_, err := ds.ReadUserTuple(ctx, storeID, filter, defaultOpts)
+			require.ErrorIs(t, err, storage.ErrNotFound)
+		}
+	})
+
+	t.Run("conditions_are_part_of_the_key", func(t *testing.T) {
+		ds, inner, _ := setup(t)
+		conditioned := filter
+		conditioned.Conditions = []string{""}
+		gomock.InOrder(
+			inner.EXPECT().ReadUserTuple(gomock.Any(), storeID, filter, defaultOpts).Return(stored, nil),
+			inner.EXPECT().ReadUserTuple(gomock.Any(), storeID, conditioned, defaultOpts).Return(nil, storage.ErrNotFound),
+		)
+
+		got, err := ds.ReadUserTuple(ctx, storeID, filter, defaultOpts)
+		requireFound(t, got, err)
+		_, err = ds.ReadUserTuple(ctx, storeID, conditioned, defaultOpts)
+		require.ErrorIs(t, err, storage.ErrNotFound)
+	})
+
+	for name, marker := range map[string]keys.Key{
+		"object_relation_marker": objectRelationMarker,
+		"store_marker":           storeMarker,
+	} {
+		t.Run(name+"_newer_than_the_entry_invalidates_it", func(t *testing.T) {
+			ds, inner, cache := setup(t)
+			gomock.InOrder(
+				inner.EXPECT().ReadUserTuple(gomock.Any(), storeID, filter, defaultOpts).Return(nil, storage.ErrNotFound),
+				inner.EXPECT().ReadUserTuple(gomock.Any(), storeID, filter, defaultOpts).Return(stored, nil),
+			)
+
+			_, err := ds.ReadUserTuple(ctx, storeID, filter, defaultOpts)
+			require.ErrorIs(t, err, storage.ErrNotFound)
+
+			entry, ok := cache.Get(storage.ReadUserTupleKey(storeID, filter)).(*storage.UserTupleCacheEntry)
+			require.True(t, ok)
+			markAt(cache, marker, entry.LastModified.Add(time.Nanosecond))
+
+			got, err := ds.ReadUserTuple(ctx, storeID, filter, defaultOpts)
+			requireFound(t, got, err)
+			got, err = ds.ReadUserTuple(ctx, storeID, filter, defaultOpts)
+			requireFound(t, got, err)
+		})
+
+		t.Run(name+"_older_than_the_entry_keeps_it", func(t *testing.T) {
+			ds, inner, cache := setup(t)
+			markAt(cache, marker, time.Now().Add(-time.Second))
+			inner.EXPECT().ReadUserTuple(gomock.Any(), storeID, filter, defaultOpts).Return(stored, nil).Times(1)
+
+			for range 2 {
+				got, err := ds.ReadUserTuple(ctx, storeID, filter, defaultOpts)
+				requireFound(t, got, err)
+			}
+		})
+	}
+
+	t.Run("markers_of_other_objects_and_relations_keep_the_entry", func(t *testing.T) {
+		ds, inner, cache := setup(t)
+		inner.EXPECT().ReadUserTuple(gomock.Any(), storeID, filter, defaultOpts).Return(stored, nil).Times(1)
+
+		got, err := ds.ReadUserTuple(ctx, storeID, filter, defaultOpts)
+		requireFound(t, got, err)
+
+		now := time.Now()
+		markAt(cache, storage.InvalidIteratorByObjectRelationCacheKey(storeID, "document:2", tk.GetRelation()), now)
+		markAt(cache, storage.InvalidIteratorByObjectRelationCacheKey(storeID, tk.GetObject(), "editor"), now)
+		markAt(cache, storage.InvalidIteratorCacheKey(ulid.Make().String()), now)
+
+		got, err = ds.ReadUserTuple(ctx, storeID, filter, defaultOpts)
+		requireFound(t, got, err)
+	})
+
+	t.Run("invalidation_during_the_query_is_not_cached", func(t *testing.T) {
+		ds, inner, cache := setup(t)
+		gomock.InOrder(
+			inner.EXPECT().ReadUserTuple(gomock.Any(), storeID, filter, defaultOpts).
+				DoAndReturn(func(context.Context, string, storage.ReadUserTupleFilter, storage.ReadUserTupleOptions) (*openfgav1.Tuple, error) {
+					// The controller observes a write that this query may not have seen.
+					markAt(cache, objectRelationMarker, time.Now())
+					return nil, storage.ErrNotFound
+				}),
+			inner.EXPECT().ReadUserTuple(gomock.Any(), storeID, filter, defaultOpts).Return(stored, nil),
+		)
+
+		_, err := ds.ReadUserTuple(ctx, storeID, filter, defaultOpts)
+		require.ErrorIs(t, err, storage.ErrNotFound)
+		require.Nil(t, cache.Get(storage.ReadUserTupleKey(storeID, filter)))
+
+		got, err := ds.ReadUserTuple(ctx, storeID, filter, defaultOpts)
+		requireFound(t, got, err)
+	})
+
+	t.Run("higher_consistency_bypasses_the_cache", func(t *testing.T) {
+		ds, inner, cache := setup(t)
+		gomock.InOrder(
+			inner.EXPECT().ReadUserTuple(gomock.Any(), storeID, filter, higherOpts).Return(stored, nil),
+			inner.EXPECT().ReadUserTuple(gomock.Any(), storeID, filter, defaultOpts).Return(nil, storage.ErrNotFound),
+			inner.EXPECT().ReadUserTuple(gomock.Any(), storeID, filter, higherOpts).Return(stored, nil),
+		)
+
+		got, err := ds.ReadUserTuple(ctx, storeID, filter, higherOpts)
+		requireFound(t, got, err)
+		require.Nil(t, cache.Get(storage.ReadUserTupleKey(storeID, filter)), "a HIGHER_CONSISTENCY read populated the cache")
+
+		_, err = ds.ReadUserTuple(ctx, storeID, filter, defaultOpts)
+		require.ErrorIs(t, err, storage.ErrNotFound)
+
+		got, err = ds.ReadUserTuple(ctx, storeID, filter, higherOpts)
+		requireFound(t, got, err)
+
+		_, err = ds.ReadUserTuple(ctx, storeID, filter, defaultOpts)
+		require.ErrorIs(t, err, storage.ErrNotFound)
+	})
+
+	t.Run("datastore_errors_are_not_cached", func(t *testing.T) {
+		ds, inner, _ := setup(t)
+		boom := errors.New("connection reset")
+		gomock.InOrder(
+			inner.EXPECT().ReadUserTuple(gomock.Any(), storeID, filter, defaultOpts).Return(nil, boom),
+			inner.EXPECT().ReadUserTuple(gomock.Any(), storeID, filter, defaultOpts).Return(stored, nil),
+		)
+
+		_, err := ds.ReadUserTuple(ctx, storeID, filter, defaultOpts)
+		require.ErrorIs(t, err, boom)
+		got, err := ds.ReadUserTuple(ctx, storeID, filter, defaultOpts)
+		requireFound(t, got, err)
+	})
+
+	t.Run("nil_tuple_without_error_fails", func(t *testing.T) {
+		ds, inner, cache := setup(t)
+		inner.EXPECT().ReadUserTuple(gomock.Any(), storeID, filter, defaultOpts).Return(nil, nil)
+
+		_, err := ds.ReadUserTuple(ctx, storeID, filter, defaultOpts)
+		require.ErrorContains(t, err, "neither a tuple nor ErrNotFound")
+		require.Nil(t, cache.Get(storage.ReadUserTupleKey(storeID, filter)))
+	})
+
+	t.Run("foreign_entry_under_the_key_fails", func(t *testing.T) {
+		ds, _, cache := setup(t)
+		cache.Set(storage.ReadUserTupleKey(storeID, filter), &storage.TupleIteratorCacheEntry{}, ttl)
+
+		_, err := ds.ReadUserTuple(ctx, storeID, filter, defaultOpts)
+		require.ErrorContains(t, err, "*storage.TupleIteratorCacheEntry")
 	})
 }
 

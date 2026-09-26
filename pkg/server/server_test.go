@@ -2321,6 +2321,92 @@ func TestCheckWithCachedIterator(t *testing.T) {
 	require.Equal(t, 1, cache.Hits())
 }
 
+// TestCheckWithCachedUserTuple covers the v1 ReadUserTuple cache end to end:
+// a not-found direct lookup is cached, and the (object, relation) marker the
+// cache controller writes for a later write invalidates it without a
+// store-wide invalidation.
+func TestCheckWithCachedUserTuple(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t)
+	})
+
+	ctx := context.Background()
+	storeID := ulid.Make().String()
+	modelID := ulid.Make().String()
+
+	model := parser.MustTransformDSLToProto(`
+		model
+			schema 1.1
+		type user
+		type document
+			relations
+				define viewer: [user]
+	`)
+	model.Id = modelID
+
+	ds := memory.New()
+	require.NoError(t, ds.WriteAuthorizationModel(ctx, storeID, model))
+	// A non-empty changelog keeps the controller off its store-wide
+	// invalidation path; the write ages out of the partial-invalidation window.
+	require.NoError(t, ds.Write(ctx, storeID, nil, []*openfgav1.TupleKey{tuple.NewTupleKey("document:0", "viewer", "user:bob")}))
+	iteratorTTL := 500 * time.Millisecond
+	time.Sleep(2 * iteratorTTL)
+
+	cache := storageTest.NewMapCache()
+	s := MustNewServerWithOpts(
+		WithContext(ctx),
+		WithDatastore(ds),
+		WithCheckCacheLimit(100),
+		WithCheckCache(cache),
+		WithCheckIteratorCacheEnabled(true),
+		WithCheckIteratorCacheMaxResults(10),
+		WithCheckIteratorCacheTTL(iteratorTTL),
+		WithCacheControllerEnabled(true),
+		WithCacheControllerTTL(1*time.Nanosecond),
+	)
+	t.Cleanup(s.Close)
+
+	check := func(consistency openfgav1.ConsistencyPreference) bool {
+		resp, err := s.Check(ctx, &openfgav1.CheckRequest{
+			StoreId:              storeID,
+			TupleKey:             tuple.NewCheckRequestTupleKey("document:1", "viewer", "user:anne"),
+			AuthorizationModelId: modelID,
+			Consistency:          consistency,
+		})
+		require.NoError(t, err)
+		return resp.GetAllowed()
+	}
+	userTupleKey := storage.ReadUserTupleKey(storeID, storage.ReadUserTupleFilter{Object: "document:1", Relation: "viewer", User: "user:anne"})
+	cachedUserTuple := func() *storage.UserTupleCacheEntry {
+		entry, _ := cache.Get(userTupleKey).(*storage.UserTupleCacheEntry)
+		return entry
+	}
+
+	require.False(t, check(openfgav1.ConsistencyPreference_UNSPECIFIED))
+	require.NotNil(t, cachedUserTuple())
+	require.Nil(t, cachedUserTuple().Tuple)
+	require.Eventually(t, func() bool {
+		return cache.Get(storage.ChangelogCacheKey(storeID)) != nil
+	}, 2*time.Second, 10*time.Millisecond)
+
+	_, err := s.Write(ctx, &openfgav1.WriteRequest{
+		StoreId:              storeID,
+		AuthorizationModelId: modelID,
+		Writes: &openfgav1.WriteRequestWrites{
+			TupleKeys: []*openfgav1.TupleKey{tuple.NewTupleKey("document:1", "viewer", "user:anne")},
+		},
+	})
+	require.NoError(t, err)
+
+	require.True(t, check(openfgav1.ConsistencyPreference_HIGHER_CONSISTENCY))
+	require.Eventually(t, func() bool {
+		return check(openfgav1.ConsistencyPreference_UNSPECIFIED)
+	}, 2*time.Second, 10*time.Millisecond)
+	require.NotNil(t, cachedUserTuple().Tuple)
+	require.NotNil(t, cache.Get(storage.InvalidIteratorByObjectRelationCacheKey(storeID, "document:1", "viewer")))
+	require.Nil(t, cache.Get(storage.InvalidIteratorCacheKey(storeID)))
+}
+
 func TestBatchCheckWithCachedIterator(t *testing.T) {
 	t.Cleanup(func() {
 		goleak.VerifyNone(t)

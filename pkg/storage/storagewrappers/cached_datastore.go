@@ -3,6 +3,7 @@ package storagewrappers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 	"golang.org/x/sync/singleflight"
+	"google.golang.org/protobuf/proto"
 
 	openfgav1 "github.com/openfga/api/proto/openfga/v1"
 
@@ -249,6 +251,69 @@ func (c *CachedDatastore) Read(
 		storage.ReadKey(store, filter),
 		filter.Object,
 		filter.Relation)
+}
+
+// ReadUserTuple see [storage.RelationshipTupleReader].ReadUserTuple. Found
+// and not-found results are cached, stamped with the query start time and
+// invalidated by the store-wide and (object, relation) markers, like Read.
+func (c *CachedDatastore) ReadUserTuple(
+	ctx context.Context,
+	store string,
+	filter storage.ReadUserTupleFilter,
+	options storage.ReadUserTupleOptions,
+) (*openfgav1.Tuple, error) {
+	ctx, span := tracer.Start(
+		ctx,
+		"cache.ReadUserTuple",
+		trace.WithAttributes(attribute.Bool("cached", false)),
+	)
+	defer span.End()
+
+	if options.Consistency.Preference == openfgav1.ConsistencyPreference_HIGHER_CONSISTENCY {
+		return c.RelationshipTupleReader.ReadUserTuple(ctx, store, filter, options)
+	}
+
+	tuplesCacheTotalCounter.WithLabelValues(storage.OperationReadUserTuple, c.method).Inc()
+	cacheKey := storage.ReadUserTupleKey(store, filter)
+	invalidStoreKey := storage.InvalidIteratorCacheKey(store)
+	invalidEntityKeys := []keys.Key{storage.InvalidIteratorByObjectRelationCacheKey(store, filter.Object, filter.Relation)}
+
+	if res := c.cache.Get(cacheKey); res != nil {
+		entry, ok := res.(*storage.UserTupleCacheEntry)
+		if !ok {
+			return nil, fmt.Errorf("ReadUserTuple cache entry %s holds %T", cacheKey, res)
+		}
+		if !isInvalidAt(c.cache, entry.LastModified, invalidStoreKey, invalidEntityKeys) {
+			tuplesCacheHitCounter.WithLabelValues(storage.OperationReadUserTuple, c.method).Inc()
+			span.SetAttributes(attribute.Bool("cached", true))
+			if entry.Tuple == nil {
+				return nil, storage.ErrNotFound
+			}
+			return proto.Clone(entry.Tuple).(*openfgav1.Tuple), nil
+		}
+		c.cache.Delete(cacheKey)
+	}
+
+	queriedAt := time.Now()
+	t, err := c.RelationshipTupleReader.ReadUserTuple(ctx, store, filter, options)
+	switch {
+	case errors.Is(err, storage.ErrNotFound):
+	case err != nil:
+		return nil, err
+	case t == nil:
+		return nil, fmt.Errorf("ReadUserTuple on store %s returned neither a tuple nor ErrNotFound for %s#%s@%s", store, filter.Object, filter.Relation, filter.User)
+	}
+
+	// A marker newer than the query start may already be present; storing
+	// anyway would let the entry outlive the marker's TTL and turn valid.
+	if !isInvalidAt(c.cache, queriedAt, invalidStoreKey, invalidEntityKeys) {
+		entry := &storage.UserTupleCacheEntry{LastModified: queriedAt}
+		if t != nil {
+			entry.Tuple = proto.Clone(t).(*openfgav1.Tuple)
+		}
+		c.cache.Set(cacheKey, entry, storage.JitteredTTL(c.ttl, c.jitterPercentage))
+	}
+	return t, err
 }
 
 func isInvalidAt(cache storage.InMemoryCache[any], ts time.Time, invalidStore keys.Key, invalidEntityKeys []keys.Key) bool {

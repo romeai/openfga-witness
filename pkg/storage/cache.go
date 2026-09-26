@@ -198,6 +198,7 @@ var (
 	_ CacheItem = (*ChangelogCacheEntry)(nil)
 	_ CacheItem = (*InvalidEntityCacheEntry)(nil)
 	_ CacheItem = (*TupleIteratorCacheEntry)(nil)
+	_ CacheItem = (*UserTupleCacheEntry)(nil)
 )
 
 type ChangelogCacheEntry struct {
@@ -270,6 +271,17 @@ type TupleIteratorCacheEntry struct {
 
 func (t *TupleIteratorCacheEntry) CacheEntityType() string {
 	return "tuple_iterator"
+}
+
+// UserTupleCacheEntry caches the result of one ReadUserTuple point lookup.
+type UserTupleCacheEntry struct {
+	// Tuple is the matching tuple, or nil when the lookup found none.
+	Tuple        *openfgav1.Tuple
+	LastModified time.Time
+}
+
+func (u *UserTupleCacheEntry) CacheEntityType() string {
+	return "user_tuple"
 }
 
 // JitteredTTL returns a TTL with random jitter added. The jitter is a random duration
