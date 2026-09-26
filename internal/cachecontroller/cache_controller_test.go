@@ -11,10 +11,13 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.uber.org/goleak"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	openfgav1 "github.com/openfga/api/proto/openfga/v1"
 
+	"github.com/openfga/openfga/pkg/logger"
 	"github.com/openfga/openfga/pkg/storage"
 	"github.com/openfga/openfga/pkg/storage/cache/keys"
 	"github.com/openfga/openfga/pkg/tuple"
@@ -33,6 +36,8 @@ type changelogDatastore struct {
 	reads   int
 	// release, when set, holds every ReadChanges until it is closed.
 	release chan struct{}
+	// fixedToken, when set, is returned as every page's continuation token.
+	fixedToken string
 }
 
 func (d *changelogDatastore) write(ts time.Time, object, user string) {
@@ -85,6 +90,9 @@ func (d *changelogDatastore) ReadChanges(ctx context.Context, _ string, _ storag
 	}
 	page := slices.Clone(d.changes[start:end])
 	slices.Reverse(page)
+	if d.fixedToken != "" {
+		return page, d.fixedToken, nil
+	}
 	return page, strconv.Itoa(start), nil
 }
 
@@ -118,8 +126,8 @@ func storeKey() keys.Key {
 	return storage.InvalidIteratorCacheKey(storeID)
 }
 
-func objectRelationKey(object, relation string) keys.Key {
-	return storage.InvalidIteratorByObjectRelationCacheKey(storeID, object, relation)
+func objectRelationKey(object string) keys.Key {
+	return storage.InvalidIteratorByObjectRelationCacheKey(storeID, object, "viewer")
 }
 
 func userObjectTypeKey(user, objectType string) keys.Key {
@@ -174,7 +182,7 @@ func TestInMemoryCacheController_DetermineInvalidationTime(t *testing.T) {
 
 		require.Equal(t, 2, c.ds.readCount())
 		require.True(t, got.After(written), "a Check result cached before the write must be invalid")
-		require.True(t, c.invalidates(objectRelationKey("document:1", "viewer"), written))
+		require.True(t, c.invalidates(objectRelationKey("document:1"), written))
 		require.True(t, c.invalidates(userObjectTypeKey("user:anne", "document"), written))
 		require.False(t, c.invalidates(storeKey(), written), "one change must not invalidate the whole store")
 	})
@@ -320,5 +328,114 @@ func TestInMemoryCacheController_DetermineInvalidationTime(t *testing.T) {
 		c.mu.RLock()
 		defer c.mu.RUnlock()
 		require.NotContains(t, c.stores, storeID)
+	})
+}
+
+func TestInMemoryCacheController_IncrementalChangelog(t *testing.T) {
+	ttl := 20 * time.Millisecond
+
+	t.Run("changes_beyond_one_page_are_invalidated_individually", func(t *testing.T) {
+		c := newTestController(t, ttl)
+		c.determine(t)
+		time.Sleep(2 * ttl)
+
+		const writes = 250
+		written := time.Now()
+		for i := range writes {
+			c.ds.write(written.Add(time.Duration(i)*time.Microsecond), "document:"+strconv.Itoa(i), "user:anne")
+		}
+		cachedBeforeObserved := time.Now()
+		got := c.determine(t)
+
+		require.True(t, got.After(cachedBeforeObserved))
+		require.False(t, c.invalidates(storeKey(), cachedBeforeObserved), "changes within the page budget must not invalidate the whole store")
+		for i := range writes {
+			require.True(t, c.invalidates(objectRelationKey("document:"+strconv.Itoa(i)), cachedBeforeObserved), "document:%d", i)
+		}
+		require.True(t, c.invalidates(userObjectTypeKey("user:anne", "document"), cachedBeforeObserved))
+		require.False(t, c.invalidates(objectRelationKey("document:unwritten"), cachedBeforeObserved))
+		require.False(t, c.invalidates(userObjectTypeKey("user:bob", "document"), cachedBeforeObserved))
+	})
+
+	t.Run("reads_stop_at_the_previous_read", func(t *testing.T) {
+		c := newTestController(t, ttl)
+		old := time.Now().Add(-2 * time.Hour)
+		for i := range 500 {
+			c.ds.write(old.Add(time.Duration(i)*time.Microsecond), "document:"+strconv.Itoa(i), "user:bob")
+		}
+		c.determine(t)
+		require.Equal(t, 1, c.ds.readCount())
+		time.Sleep(2 * ttl)
+
+		c.ds.write(time.Now(), "document:new", "user:anne")
+		c.determine(t)
+		require.Equal(t, 2, c.ds.readCount())
+	})
+
+	t.Run("processed_changes_are_not_invalidated_again", func(t *testing.T) {
+		c := newTestController(t, ttl)
+		c.determine(t)
+		time.Sleep(2 * ttl)
+		c.ds.write(time.Now(), "document:1", "user:anne")
+		first := c.determine(t)
+		cachedAfterObserved := time.Now()
+		time.Sleep(2 * ttl)
+
+		require.Equal(t, first, c.determine(t))
+		require.False(t, c.invalidates(objectRelationKey("document:1"), cachedAfterObserved))
+	})
+
+	t.Run("change_committed_after_a_newer_one_was_read_is_invalidated", func(t *testing.T) {
+		c := newTestController(t, ttl)
+		c.determine(t)
+		time.Sleep(2 * ttl)
+		c.ds.write(time.Now(), "document:1", "user:anne")
+		c.determine(t)
+		time.Sleep(2 * ttl)
+
+		// Its transaction started before document:1's but committed after
+		// the controller read the changelog.
+		c.ds.write(time.Now().Add(-5*time.Second), "document:2", "user:anne")
+		cachedBeforeObserved := time.Now()
+		got := c.determine(t)
+
+		require.True(t, got.After(cachedBeforeObserved))
+		require.True(t, c.invalidates(objectRelationKey("document:2"), cachedBeforeObserved))
+		require.False(t, c.invalidates(storeKey(), cachedBeforeObserved))
+	})
+
+	t.Run("exhausted_page_budget_invalidates_the_whole_store_and_is_logged", func(t *testing.T) {
+		c := newTestController(t, ttl)
+		core, logs := observer.New(zap.WarnLevel)
+		c.logger = &logger.ZapLogger{Logger: zap.New(core)}
+		c.determine(t)
+		time.Sleep(2 * ttl)
+
+		written := time.Now()
+		for i := range maxChangelogPages*changelogPageSize + 1 {
+			c.ds.write(written.Add(time.Duration(i)*time.Microsecond), "document:"+strconv.Itoa(i), "user:anne")
+		}
+		cachedBeforeObserved := time.Now()
+		got := c.determine(t)
+
+		require.True(t, got.After(cachedBeforeObserved))
+		require.True(t, c.invalidates(storeKey(), cachedBeforeObserved))
+		require.Equal(t, 1, logs.FilterMessageSnippet("page budget").Len())
+		require.Equal(t, 1+maxChangelogPages, c.ds.readCount())
+	})
+
+	t.Run("repeated_continuation_token_invalidates_the_whole_store", func(t *testing.T) {
+		c := newTestController(t, ttl)
+		c.determine(t)
+		time.Sleep(2 * ttl)
+		written := time.Now()
+		for i := range changelogPageSize + 1 {
+			c.ds.write(written.Add(time.Duration(i)*time.Microsecond), "document:"+strconv.Itoa(i), "user:anne")
+		}
+		c.ds.fixedToken = "stuck"
+		cachedBeforeObserved := time.Now()
+		c.determine(t)
+
+		require.True(t, c.invalidates(storeKey(), cachedBeforeObserved))
 	})
 }

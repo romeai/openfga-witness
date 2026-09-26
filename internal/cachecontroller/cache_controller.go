@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"sync"
 	"time"
 
@@ -60,6 +61,23 @@ var (
 // request waits for it.
 const refreshTimeout = time.Second
 
+const changelogPageSize = 100
+
+// maxChangelogPages bounds the changes one read invalidates one by one; past
+// it the read invalidates the whole store instead.
+const maxChangelogPages = 20
+
+// changelogSettleMargin is how far before the previous read's start each read
+// goes back. A change's changelog position and timestamp are taken before its
+// transaction commits, so it can become visible after a newer change was
+// read. The margin must exceed the longest write transaction plus the clock
+// skew between OpenFGA and the datastore.
+const changelogSettleMargin = time.Minute
+
+// errChangelogPageBudget reports more changes since the previous read than
+// maxChangelogPages hold.
+var errChangelogPageBudget = errors.New("changelog page budget exhausted")
+
 type CacheController interface {
 	// DetermineInvalidationTime returns the time before which the store's
 	// cached Check results are invalid. When the store's changelog was last
@@ -104,8 +122,7 @@ type InMemoryCacheController struct {
 
 	// ttl bounds the staleness of cached answers: a request never relies on a
 	// changelog read that started more than ttl before it.
-	ttl              time.Duration
-	iteratorCacheTTL time.Duration
+	ttl time.Duration
 	// stateTTL is how long a store's state is kept after its last read. A
 	// store without state is invalidated as a whole on its next read, so the
 	// state only needs to outlive the cache entries it guards to spare them.
@@ -120,13 +137,36 @@ type InMemoryCacheController struct {
 
 // storeState is what the controller knows about one store's changelog.
 type storeState struct {
-	// lastChange is the timestamp of the newest change seen in the changelog.
-	lastChange time.Time
 	// checkedAt is the start of the changelog read that produced this state.
 	checkedAt time.Time
 	// invalidatedAt is when a new change was last observed: Check results
 	// stamped before it may predate that change.
 	invalidatedAt time.Time
+	// processed counts the processed changes the next read reads again,
+	// those within changelogSettleMargin before checkedAt.
+	processed map[changeKey]int
+}
+
+// changeKey identifies a change by everything the controller reads of it.
+// Changes sharing a key invalidate the same entries, so counting them is
+// enough to tell the ones already processed from new ones.
+type changeKey struct {
+	timestamp int64
+	operation openfgav1.TupleOperation
+	object    string
+	relation  string
+	user      string
+}
+
+func keyOf(change *openfgav1.TupleChange) changeKey {
+	tk := change.GetTupleKey()
+	return changeKey{
+		timestamp: change.GetTimestamp().AsTime().UnixNano(),
+		operation: change.GetOperation(),
+		object:    tk.GetObject(),
+		relation:  tk.GetRelation(),
+		user:      tk.GetUser(),
+	}
 }
 
 func NewCacheController(
@@ -141,13 +181,12 @@ func NewCacheController(
 		panic("cache controller has no invalidation markers to write")
 	}
 	c := &InMemoryCacheController{
-		ds:               ds,
-		markers:          markers,
-		ttl:              ttl,
-		iteratorCacheTTL: iteratorCacheTTL,
-		stateTTL:         max(ttl, queryCacheTTL, iteratorCacheTTL),
-		logger:           logger.NewNoopLogger(),
-		stores:           map[string]*storeState{},
+		ds:       ds,
+		markers:  markers,
+		ttl:      ttl,
+		stateTTL: max(ttl, queryCacheTTL, iteratorCacheTTL),
+		logger:   logger.NewNoopLogger(),
+		stores:   map[string]*storeState{},
 	}
 
 	for _, opt := range opts {
@@ -216,11 +255,11 @@ func (c *InMemoryCacheController) DetermineInvalidationTime(ctx context.Context,
 	return st.invalidatedAt, nil
 }
 
-// refresh reads the store's changelog and invalidates the cache entries the
-// changes it finds may have made stale. It always yields a state: when the
-// changelog cannot be read, or no earlier state says which changes the caches
-// have seen, it invalidates all of the store's cache entries, which needs no
-// read at all.
+// refresh reads the changes to the store's changelog since the previous
+// read and invalidates the cache entries each may have made stale. It always
+// yields a state: when the changes cannot all be read (error, timeout, page
+// budget), or no previous state says which changes the caches have seen, it
+// invalidates all of the store's cache entries, which needs no read at all.
 func (c *InMemoryCacheController) refresh(storeID string, caller trace.Link) *storeState {
 	start := time.Now()
 	ctx, span := tracer.Start(context.Background(), "cacheController.refresh", trace.WithLinks(caller))
@@ -229,32 +268,42 @@ func (c *InMemoryCacheController) refresh(storeID string, caller trace.Link) *st
 	defer cancel()
 
 	prev := c.state(storeID)
-	changes, err := c.readNewestChanges(ctx, storeID)
+	since := start
+	if prev != nil {
+		since = prev.checkedAt
+	}
+	changes, err := c.readChangesSince(ctx, storeID, since.Add(-changelogSettleMargin))
 	observedAt := time.Now()
 
-	st := &storeState{checkedAt: start, invalidatedAt: observedAt}
+	st := &storeState{checkedAt: start, invalidatedAt: observedAt, processed: map[changeKey]int{}}
 	invalidationType := "full"
 	switch {
+	case errors.Is(err, errChangelogPageBudget):
+		c.logger.Warn("cache controller found more changes than its changelog page budget; invalidating every cache entry of the store",
+			zap.String("store_id", storeID), zap.Int("page_budget", maxChangelogPages), zap.Int("page_size", changelogPageSize))
+		c.markers.Invalidate(storage.InvalidIteratorCacheKey(storeID), observedAt)
 	case err != nil:
 		telemetry.TraceError(span, err)
 		c.logger.Error("cache controller could not read the changelog; invalidating every cache entry of the store",
 			zap.String("store_id", storeID), zap.Error(err))
-		if prev != nil {
-			st.lastChange = prev.lastChange
-		}
 		c.markers.Invalidate(storage.InvalidIteratorCacheKey(storeID), observedAt)
 	case prev == nil:
-		if len(changes) > 0 {
-			st.lastChange = changes[0].GetTimestamp().AsTime()
-		}
+		st.recordProcessed(changes)
 		c.markers.Invalidate(storage.InvalidIteratorCacheKey(storeID), observedAt)
-	case len(changes) == 0 || !changes[0].GetTimestamp().AsTime().After(prev.lastChange):
-		invalidationType = "none"
-		st.lastChange = prev.lastChange
-		st.invalidatedAt = prev.invalidatedAt
 	default:
-		st.lastChange = changes[0].GetTimestamp().AsTime()
-		invalidationType = c.invalidateChanged(storeID, changes, observedAt)
+		st.recordProcessed(changes)
+		invalidationType = "none"
+		st.invalidatedAt = prev.invalidatedAt
+		if fresh := prev.unprocessed(changes); len(fresh) > 0 {
+			invalidationType = "partial"
+			st.invalidatedAt = observedAt
+			for _, change := range fresh {
+				tk := change.GetTupleKey()
+				c.markers.Invalidate(storage.InvalidIteratorByObjectRelationCacheKey(storeID, tk.GetObject(), tk.GetRelation()), observedAt)
+				// Iterators by user cover every relation of the object type.
+				c.markers.Invalidate(storage.InvalidIteratorByUserObjectTypeCacheKey(storeID, tk.GetUser(), tuple.GetType(tk.GetObject())), observedAt)
+			}
+		}
 	}
 	c.setState(storeID, st)
 
@@ -263,64 +312,69 @@ func (c *InMemoryCacheController) refresh(storeID string, caller trace.Link) *st
 	}
 	c.logger.Debug("InMemoryCacheController refresh",
 		zap.String("store_id", storeID),
-		zap.Time("lastChangeTime", st.lastChange),
+		zap.Int("changes", len(changes)),
 		zap.String("invalidationType", invalidationType))
 	span.SetAttributes(attribute.String("invalidationType", invalidationType))
 	findChangesAndInvalidateHistogram.WithLabelValues(invalidationType).Observe(float64(time.Since(start).Milliseconds()))
 	return st
 }
 
-// readNewestChanges returns the newest page of the store's changelog, newest
-// first, and no changes when the changelog is empty.
-func (c *InMemoryCacheController) readNewestChanges(ctx context.Context, storeID string) ([]*openfgav1.TupleChange, error) {
-	opts := storage.ReadChangesOptions{
-		SortDesc: true,
-		Pagination: storage.PaginationOptions{
-			PageSize: storage.DefaultPageSize,
-		},
-	}
-	changes, _, err := c.ds.ReadChanges(ctx, storeID, storage.ReadChangesFilter{}, opts)
-	if errors.Is(err, storage.ErrNotFound) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	if len(changes) == 0 {
-		return nil, fmt.Errorf("ReadChanges on store %s returned no changes and no ErrNotFound", storeID)
-	}
-	return changes, nil
-}
-
-// invalidateChanged invalidates the iterators the changes may have made
-// stale, newest first in changes, and returns the kind of invalidation.
-func (c *InMemoryCacheController) invalidateChanged(storeID string, changes []*openfgav1.TupleChange, ts time.Time) string {
-	lastIteratorInvalidation := time.Now().Add(-c.iteratorCacheTTL)
-
-	// Only changes newer than the iterator TTL can be missing from a cached
-	// iterator. idx ends at the oldest such change.
-	idx := len(changes) - 1
-	for ; idx >= 0; idx-- {
-		if changes[idx].GetTimestamp().AsTime().After(lastIteratorInvalidation) {
-			break
+// recordProcessed records the changes the next read reads again.
+func (st *storeState) recordProcessed(changes []*openfgav1.TupleChange) {
+	horizon := st.checkedAt.Add(-changelogSettleMargin)
+	for _, change := range changes {
+		if !change.GetTimestamp().AsTime().Before(horizon) {
+			st.processed[keyOf(change)]++
 		}
 	}
+}
 
-	if idx == len(changes)-1 {
-		// Even the oldest change read is recent, so older unread ones may be too.
-		c.markers.Invalidate(storage.InvalidIteratorCacheKey(storeID), ts)
-		return "full"
+// unprocessed returns the changes this state has not processed yet.
+func (st *storeState) unprocessed(changes []*openfgav1.TupleChange) []*openfgav1.TupleChange {
+	remaining := maps.Clone(st.processed)
+	var fresh []*openfgav1.TupleChange
+	for _, change := range changes {
+		key := keyOf(change)
+		if remaining[key] > 0 {
+			remaining[key]--
+			continue
+		}
+		fresh = append(fresh, change)
 	}
+	return fresh
+}
 
-	invalidationType := "none"
-	if idx >= 0 {
-		invalidationType = "partial"
+// readChangesSince returns the store's changes with timestamps at or after
+// horizon, newest first. It fails with errChangelogPageBudget when they do
+// not fit maxChangelogPages.
+func (c *InMemoryCacheController) readChangesSince(ctx context.Context, storeID string, horizon time.Time) ([]*openfgav1.TupleChange, error) {
+	var changes []*openfgav1.TupleChange
+	from := ""
+	for range maxChangelogPages {
+		opts := storage.ReadChangesOptions{
+			SortDesc:   true,
+			Pagination: storage.PaginationOptions{PageSize: changelogPageSize, From: from},
+		}
+		page, token, err := c.ds.ReadChanges(ctx, storeID, storage.ReadChangesFilter{}, opts)
+		if errors.Is(err, storage.ErrNotFound) {
+			return changes, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		if len(page) == 0 {
+			return nil, fmt.Errorf("ReadChanges on store %s returned no changes and no ErrNotFound", storeID)
+		}
+		for _, change := range page {
+			if change.GetTimestamp().AsTime().Before(horizon) {
+				return changes, nil
+			}
+			changes = append(changes, change)
+		}
+		if token == "" || token == from {
+			return nil, fmt.Errorf("ReadChanges on store %s returned continuation token %q after %q", storeID, token, from)
+		}
+		from = token
 	}
-	for ; idx >= 0; idx-- {
-		t := changes[idx].GetTupleKey()
-		c.markers.Invalidate(storage.InvalidIteratorByObjectRelationCacheKey(storeID, t.GetObject(), t.GetRelation()), ts)
-		// We invalidate all iterators for the tuple's user and object type, regardless of the relation.
-		c.markers.Invalidate(storage.InvalidIteratorByUserObjectTypeCacheKey(storeID, t.GetUser(), tuple.GetType(t.GetObject())), ts)
-	}
-	return invalidationType
+	return nil, errChangelogPageBudget
 }

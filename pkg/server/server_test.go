@@ -2350,11 +2350,6 @@ func TestCheckWithCachedUserTuple(t *testing.T) {
 
 	ds := memory.New()
 	require.NoError(t, ds.WriteAuthorizationModel(ctx, storeID, model))
-	// The seed write ages out of the iterator TTL, so the controller's read
-	// after the later write invalidates only what that write touched.
-	require.NoError(t, ds.Write(ctx, storeID, nil, []*openfgav1.TupleKey{tuple.NewTupleKey("document:0", "viewer", "user:bob")}))
-	iteratorTTL := 500 * time.Millisecond
-	time.Sleep(2 * iteratorTTL)
 
 	cache := storageTest.NewMapCache()
 	s := MustNewServerWithOpts(
@@ -2364,7 +2359,7 @@ func TestCheckWithCachedUserTuple(t *testing.T) {
 		WithCheckCache(cache),
 		WithCheckIteratorCacheEnabled(true),
 		WithCheckIteratorCacheMaxResults(10),
-		WithCheckIteratorCacheTTL(iteratorTTL),
+		WithCheckIteratorCacheTTL(time.Hour),
 		WithCacheControllerEnabled(true),
 		WithCacheControllerTTL(1*time.Nanosecond),
 	)
@@ -2702,11 +2697,6 @@ func TestCacheEvictionCannotReviveInvalidatedEntry(t *testing.T) {
 
 	ds := memory.New()
 	require.NoError(t, ds.WriteAuthorizationModel(ctx, storeID, model))
-	require.NoError(t, ds.Write(ctx, storeID, nil, []*openfgav1.TupleKey{tuple.NewTupleKey("document:0", "viewer", "user:bob")}))
-	// The seed write ages out of the iterator TTL, so the controller's read
-	// after the later write invalidates only what that write touched.
-	iteratorTTL := 500 * time.Millisecond
-	time.Sleep(2 * iteratorTTL)
 
 	controllerTTL := 50 * time.Millisecond
 	cache := newReadTrackingCache()
@@ -2717,7 +2707,7 @@ func TestCacheEvictionCannotReviveInvalidatedEntry(t *testing.T) {
 		WithCheckCache(cache),
 		WithCheckIteratorCacheEnabled(true),
 		WithCheckIteratorCacheMaxResults(10),
-		WithCheckIteratorCacheTTL(iteratorTTL),
+		WithCheckIteratorCacheTTL(time.Hour),
 		WithCacheControllerEnabled(true),
 		WithCacheControllerTTL(controllerTTL),
 	)
@@ -2754,6 +2744,95 @@ func TestCacheEvictionCannotReviveInvalidatedEntry(t *testing.T) {
 	cache.evictUnreadExcept(notFoundKey)
 
 	require.True(t, check("document:1"))
+}
+
+// userTupleReadCounter counts the ReadUserTuple lookups that reach the
+// datastore, per object.
+type userTupleReadCounter struct {
+	storage.OpenFGADatastore
+	mu    sync.Mutex
+	reads map[string]int
+}
+
+func (d *userTupleReadCounter) ReadUserTuple(ctx context.Context, store string, filter storage.ReadUserTupleFilter, options storage.ReadUserTupleOptions) (*openfgav1.Tuple, error) {
+	d.mu.Lock()
+	d.reads[filter.Object]++
+	d.mu.Unlock()
+	return d.OpenFGADatastore.ReadUserTuple(ctx, store, filter, options)
+}
+
+func (d *userTupleReadCounter) count(object string) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.reads[object]
+}
+
+// TestIteratorCacheAfterMoreThanOnePageOfWrites covers more writes between
+// two changelog reads than one changelog page holds: the lookups they touch
+// must be invalidated, and the others still served from the cache.
+func TestIteratorCacheAfterMoreThanOnePageOfWrites(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t)
+	})
+
+	ctx := context.Background()
+	storeID := ulid.Make().String()
+	modelID := ulid.Make().String()
+
+	model := parser.MustTransformDSLToProto(`
+		model
+			schema 1.1
+		type user
+		type document
+			relations
+				define viewer: [user]
+	`)
+	model.Id = modelID
+
+	ds := &userTupleReadCounter{OpenFGADatastore: memory.New(), reads: map[string]int{}}
+	require.NoError(t, ds.WriteAuthorizationModel(ctx, storeID, model))
+
+	controllerTTL := 50 * time.Millisecond
+	s := MustNewServerWithOpts(
+		WithContext(ctx),
+		WithDatastore(ds),
+		WithCheckCacheLimit(1000),
+		WithCheckIteratorCacheEnabled(true),
+		WithCheckIteratorCacheMaxResults(10),
+		WithCheckIteratorCacheTTL(24*time.Hour),
+		WithCacheControllerEnabled(true),
+		WithCacheControllerTTL(controllerTTL),
+	)
+	t.Cleanup(s.Close)
+
+	check := func(object string) bool {
+		resp, err := s.Check(ctx, &openfgav1.CheckRequest{
+			StoreId:              storeID,
+			TupleKey:             tuple.NewCheckRequestTupleKey(object, "viewer", "user:anne"),
+			AuthorizationModelId: modelID,
+		})
+		require.NoError(t, err)
+		return resp.GetAllowed()
+	}
+
+	require.False(t, check("document:kept"))
+	require.False(t, check("document:written"))
+
+	// The first write is the oldest change, on the last changelog page.
+	require.NoError(t, ds.Write(ctx, storeID, nil, []*openfgav1.TupleKey{tuple.NewTupleKey("document:written", "viewer", "user:anne")}))
+	for batch := range 4 {
+		var writes []*openfgav1.TupleKey
+		for i := range 40 {
+			writes = append(writes, tuple.NewTupleKey(fmt.Sprintf("document:filler-%d-%d", batch, i), "viewer", "user:bob"))
+		}
+		require.NoError(t, ds.Write(ctx, storeID, nil, writes))
+	}
+	time.Sleep(2 * controllerTTL)
+
+	require.True(t, check("document:written"))
+	keptReads := ds.count("document:kept")
+	require.False(t, check("document:kept"))
+	require.Equal(t, keptReads, ds.count("document:kept"), "a lookup no write touched must still be served from the cache")
 }
 
 func TestBatchCheckWithCachedIterator(t *testing.T) {
