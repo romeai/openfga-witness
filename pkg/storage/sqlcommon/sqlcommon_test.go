@@ -223,10 +223,11 @@ func (s *stubRowGetter) GetRows(_ context.Context) (Rows, error) {
 // stubRows is a no-op Rows implementation.
 type stubRows struct{}
 
-func (r *stubRows) Close() error      { return nil }
-func (r *stubRows) Err() error        { return nil }
-func (r *stubRows) Next() bool        { return false }
-func (r *stubRows) Scan(...any) error { return nil }
+func (r *stubRows) Close() error               { return nil }
+func (r *stubRows) Err() error                 { return nil }
+func (r *stubRows) Next() bool                 { return false }
+func (r *stubRows) Scan(...any) error          { return nil }
+func (r *stubRows) Columns() ([]string, error) { return SQLIteratorColumns(), nil }
 
 func sqlIterQuerySampleCount(t *testing.T, successVal string) uint64 {
 	t.Helper()

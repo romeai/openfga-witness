@@ -437,17 +437,19 @@ func (q *SBIteratorQuery) GetRows(ctx context.Context) (Rows, error) {
 //   - Err(): Returns the error, if any, that was encountered during iteration.
 //   - Next(): Advances to the next row, returning true if there is another row available.
 //   - Scan(dest ...any): Scans the columns of the current row into the provided destination variables.
+//   - Columns(): Returns the column names of the result set, before any row is read.
 type Rows interface {
 	Close() error
 	Err() error
 	Next() bool
 	Scan(dest ...any) error
+	Columns() ([]string, error)
 }
 
 // SQLTupleIterator is a struct that implements the storage.TupleIterator
 // interface for iterating over tuples fetched from a SQL database.
 type SQLTupleIterator struct {
-	rows           Rows // GUARDED_BY(mu)
+	rows           *bufferedRows // GUARDED_BY(mu)
 	handleSQLError errorHandlerFn
 
 	// firstRow is used as a temporary storage place if head is called.
@@ -504,7 +506,11 @@ func (t *SQLTupleIterator) fetchBuffer(ctx context.Context) error {
 		return storageErr
 	}
 	storage.ObserveIterQueryDuration(true, elapsed)
-	t.rows = curRows
+	buffered, err := bufferRows(curRows)
+	if err != nil {
+		return t.handleSQLError(err)
+	}
+	t.rows = buffered
 	return nil
 }
 

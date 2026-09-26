@@ -4,6 +4,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -111,6 +112,26 @@ func (r *pgxRowsWrapper) Close() error {
 		r.conn = nil
 	}
 	return nil
+}
+
+// Columns returns the result's column names. A failed pgx query keeps its
+// error in the result, reporting it only from Next/Err, and leaves the field
+// descriptions empty meanwhile; closing surfaces that error so it is not
+// mistaken for an empty column list.
+func (r *pgxRowsWrapper) Columns() ([]string, error) {
+	fields := r.rows.FieldDescriptions()
+	if fields == nil {
+		_ = r.Close()
+		if err := r.rows.Err(); err != nil {
+			return nil, err
+		}
+		return nil, errors.New("pgx result has no field descriptions")
+	}
+	columns := make([]string, len(fields))
+	for i, field := range fields {
+		columns[i] = field.Name
+	}
+	return columns, nil
 }
 
 var _ sqlcommon.Rows = (*pgxRowsWrapper)(nil)

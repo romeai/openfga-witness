@@ -748,6 +748,52 @@ func TestReadEnsureNoOrder(t *testing.T) {
 	}
 }
 
+// TestIteratorReleasesPooledConnectionBeforeFirstTuple asserts that a tuple
+// iterator hands its pooled connection back before its consumer sees the
+// first tuple: with a single-connection pool, a consumer holding an
+// unexhausted iterator must still be able to issue a nested read.
+func TestIteratorReleasesPooledConnectionBeforeFirstTuple(t *testing.T) {
+	testDatastore := storagefixtures.RunDatastoreTestContainer(t, "postgres")
+
+	uri := testDatastore.GetConnectionURI(true)
+	cfg := sqlcommon.NewConfig()
+	cfg.MaxOpenConns = 1
+	ds, err := New(uri, cfg)
+	require.NoError(t, err)
+	defer ds.Close()
+
+	ctx := context.Background()
+	store := ulid.Make().String()
+	tuples := []*openfgav1.TupleKey{
+		tupleUtils.NewTupleKey("doc:1", "viewer", "user:anne"),
+		tupleUtils.NewTupleKey("doc:2", "viewer", "user:anne"),
+		tupleUtils.NewTupleKey("doc:3", "viewer", "user:anne"),
+	}
+	require.NoError(t, ds.Write(ctx, store, nil, tuples))
+	require.Zero(t, ds.primaryDB.Stat().AcquiredConns())
+
+	iter, err := ds.Read(ctx, store, storage.ReadFilter{Object: "doc:", Relation: "viewer"}, storage.ReadOptions{})
+	require.NoError(t, err)
+	defer iter.Stop()
+
+	_, err = iter.Next(ctx)
+	require.NoError(t, err)
+	require.Zero(t, ds.primaryDB.Stat().AcquiredConns(), "iterator still holds the pooled connection after its first tuple")
+
+	nestedCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	nested, err := ds.ReadUserTuple(nestedCtx, store, storage.ReadUserTupleFilter{Object: "doc:2", Relation: "viewer", User: "user:anne"}, storage.ReadUserTupleOptions{})
+	require.NoError(t, err, "nested read while the iterator is open")
+	require.Equal(t, tuples[1], nested.GetKey())
+
+	for range 2 {
+		_, err = iter.Next(ctx)
+		require.NoError(t, err)
+	}
+	_, err = iter.Next(ctx)
+	require.ErrorIs(t, err, storage.ErrIteratorDone)
+}
+
 func TestCtxCancel(t *testing.T) {
 	tests := []struct {
 		name  string
