@@ -1,8 +1,10 @@
 name: Sync with upstream OpenFGA
 
+# No schedule: release branches (witness-v<upstream tag>) sit on an upstream
+# release tag, and a scheduled rebase onto upstream/main would carry
+# unreleased upstream code into anything that tracks the branch. Move to a
+# new upstream release by rebasing onto its tag into a new branch.
 on:
-  schedule:
-    - cron: '0 6 * * 1'  # Weekly on Monday at 6am UTC
   workflow_dispatch:
 
 permissions:

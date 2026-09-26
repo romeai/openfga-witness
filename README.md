@@ -25,7 +25,7 @@ gRPC request
   → response returned unchanged
 ```
 
-**The fork is minimal.** Only one upstream file is modified (`cmd/run/run.go`, ~30 lines) to expose interceptor hooks on the gRPC server. All other code lives under `witness/`, cleanly separated from upstream. This makes rebasing against upstream OpenFGA straightforward — only one commit can ever conflict.
+**The fork is minimal.** The audit layer modifies one upstream file (`cmd/run/run.go`, ~30 lines) to expose interceptor hooks on the gRPC server; its other code lives under `witness/`, cleanly separated from upstream. Release branches (`witness-v<tag>`) additionally carry a few storage and cache patches, listed in `AGENTS.md`, each a separate tested commit.
 
 ### Audit Events
 
@@ -147,10 +147,10 @@ openfga-witness exposes Prometheus metrics alongside OpenFGA's existing metrics:
 openfga-witness tracks upstream OpenFGA via `git remote`. The API is unchanged — all OpenFGA clients, SDKs, and tools work without modification.
 
 ```bash
-# Sync with upstream
-git fetch upstream
-git rebase upstream/main
-# Only one commit modifies upstream code — conflicts are rare and small
+# Move to a new upstream release: rebase the fork commits onto its tag in a new branch
+git fetch upstream --tags
+git checkout -b witness-v<new-tag> witness-v<old-tag>
+git rebase --onto v<new-tag> v<old-tag>
 ```
 
 Conformance is verified by running OpenFGA's full matrix test suite (~12,500 lines of YAML test cases) against the witness binary.

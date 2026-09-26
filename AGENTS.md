@@ -1,11 +1,18 @@
 # AGENTS.md
 
-This is a fork of [OpenFGA](https://github.com/openfga/openfga) that adds an audit logging layer. See upstream's `AGENTS.md` conventions (import aliases, naming, error handling, testing) — they all apply here. This file covers what the fork adds.
+This is a fork of [OpenFGA](https://github.com/openfga/openfga) that adds an audit logging layer and a small set of storage and cache patches. See upstream's `AGENTS.md` conventions (import aliases, naming, error handling, testing) — they all apply here. This file covers what the fork adds.
 
 ## Design Goals
 
 - **Thin audit wrapper** — minimize changes to upstream code so rebasing on new OpenFGA releases is trivial.
-- **No upstream logic changes** — audit is purely additive. The fork must pass all upstream conformance and matrix tests unmodified.
+- **Audit is purely additive** — the audit layer changes no upstream logic. The fork must pass all upstream conformance and matrix tests unmodified.
+- **Patches stay few and tested** — upstream logic changes are limited to the storage and cache patches listed below, each a separate commit with its tests.
+
+## Upstream Logic Patches
+
+- **Buffered SQL tuple rows** (`pkg/storage/sqlcommon/buffered_rows.go`) — tuple iterators drain their result and release the pooled connection before the first tuple reaches the consumer (no hold-and-wait on a saturated pool).
+- **ReadUserTuple caching** (`pkg/storage/storagewrappers/cached_datastore.go`) — the v1 iterator cache also caches point lookups, invalidated by the cache controller's store-wide and (object, relation) markers.
+- **Check cache stamps** (`pkg/storage/cache_freshness.go`, `internal/graph/cached_resolver.go`, `internal/check/check.go`) — check-query cache entries are stamped at computation start, lowered to the oldest cache entry the computation consumed.
 
 ## Key Design Decisions
 
@@ -20,8 +27,9 @@ This is a fork of [OpenFGA](https://github.com/openfga/openfga) that adds an aud
 
 ## Branch Structure
 
-- **`main`** — tracks upstream `openfga/openfga:main`. Kept in sync via automated workflow (`.github/workflows/witness-sync-upstream.yaml`). Never commit fork changes here.
-- **`witness`** — default development branch. All audit layer work lives here, rebased on `main`.
+- **`main`** — tracks upstream `openfga/openfga:main`. Never commit fork changes here.
+- **`witness`** — the audit layer rebased on `main` by the manually dispatched sync workflow (`.github/workflows/witness-sync-upstream.yaml`).
+- **`witness-v<tag>`** (e.g. `witness-v1.21.0`) — release branches: the fork commits rebased onto upstream release tag `<tag>`. Consumers pin these. They are never rebased onto `main`; a new upstream release gets a new branch.
 
 ## Directory Structure (fork additions)
 
