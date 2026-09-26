@@ -30,6 +30,7 @@ func startTestServer(t *testing.T) (tests.ClientInterface, *sink.MemorySink) {
 	cfg := serverconfig.DefaultConfig()
 	cfg.Datastore.Engine = "memory"
 	cfg.Log.Level = "error"
+	cfg.Experimentals = append(cfg.Experimentals, serverconfig.ExperimentalInlineExpressions)
 
 	lgr := logger.MustNewLogger(cfg.Log.Format, cfg.Log.Level, cfg.Log.TimestampFormat)
 	serverCtx := &run.ServerContext{
