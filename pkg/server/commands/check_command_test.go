@@ -198,12 +198,27 @@ type doc
 			require.Equal(t, req.GetLastCacheInvalidationTime(), invalidationTime)
 			return &graph.ResolveCheckResponse{}, nil
 		})
-		cacheController.EXPECT().DetermineInvalidationTime(gomock.Any(), storeID).Return(invalidationTime)
+		cacheController.EXPECT().DetermineInvalidationTime(gomock.Any(), storeID).Return(invalidationTime, nil)
 		_, err := cmd.Execute(context.Background(), &CheckCommandParams{
 			StoreID:  storeID,
 			TupleKey: tuple.NewCheckRequestTupleKey("doc:1", "viewer", "user:1"),
 		})
 		require.NoError(t, err)
+	})
+
+	t.Run("cache_controller_error_fails_before_resolution", func(t *testing.T) {
+		storeID := ulid.Make().String()
+		cacheController := mockstorage.NewMockCacheController(mockController)
+		cmd := NewCheckCommand(mockDatastore, mockCheckResolver, ts, WithCheckCommandCache(&shared.SharedDatastoreResources{
+			CacheController: cacheController,
+			Logger:          logger.NewNoopLogger(),
+		}, config.CacheSettings{}))
+		cacheController.EXPECT().DetermineInvalidationTime(gomock.Any(), storeID).Return(time.Time{}, context.Canceled)
+		_, err := cmd.Execute(context.Background(), &CheckCommandParams{
+			StoreID:  storeID,
+			TupleKey: tuple.NewCheckRequestTupleKey("doc:1", "viewer", "user:1"),
+		})
+		require.ErrorIs(t, err, context.Canceled)
 	})
 
 	t.Run("fails_if_store_id_is_missing", func(t *testing.T) {

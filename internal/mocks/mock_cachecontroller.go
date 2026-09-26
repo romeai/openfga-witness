@@ -42,27 +42,16 @@ func (m *MockCacheController) EXPECT() *MockCacheControllerMockRecorder {
 }
 
 // DetermineInvalidationTime mocks base method.
-func (m *MockCacheController) DetermineInvalidationTime(arg0 context.Context, arg1 string) time.Time {
+func (m *MockCacheController) DetermineInvalidationTime(ctx context.Context, storeID string) (time.Time, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "DetermineInvalidationTime", arg0, arg1)
+	ret := m.ctrl.Call(m, "DetermineInvalidationTime", ctx, storeID)
 	ret0, _ := ret[0].(time.Time)
-	return ret0
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
 }
 
 // DetermineInvalidationTime indicates an expected call of DetermineInvalidationTime.
-func (mr *MockCacheControllerMockRecorder) DetermineInvalidationTime(arg0, arg1 any) *gomock.Call {
+func (mr *MockCacheControllerMockRecorder) DetermineInvalidationTime(ctx, storeID any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DetermineInvalidationTime", reflect.TypeOf((*MockCacheController)(nil).DetermineInvalidationTime), arg0, arg1)
-}
-
-// InvalidateIfNeeded mocks base method.
-func (m *MockCacheController) InvalidateIfNeeded(arg0 context.Context, arg1 string) {
-	m.ctrl.T.Helper()
-	m.ctrl.Call(m, "InvalidateIfNeeded", arg0, arg1)
-}
-
-// InvalidateIfNeeded indicates an expected call of InvalidateIfNeeded.
-func (mr *MockCacheControllerMockRecorder) InvalidateIfNeeded(arg0, arg1 any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "InvalidateIfNeeded", reflect.TypeOf((*MockCacheController)(nil).InvalidateIfNeeded), arg0, arg1)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DetermineInvalidationTime", reflect.TypeOf((*MockCacheController)(nil).DetermineInvalidationTime), ctx, storeID)
 }

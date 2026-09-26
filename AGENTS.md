@@ -13,6 +13,7 @@ This is a fork of [OpenFGA](https://github.com/openfga/openfga) that adds an aud
 - **Buffered SQL tuple rows** (`pkg/storage/sqlcommon/buffered_rows.go`) — tuple iterators drain their result and release the pooled connection before the first tuple reaches the consumer (no hold-and-wait on a saturated pool).
 - **ReadUserTuple caching** (`pkg/storage/storagewrappers/cached_datastore.go`) — the v1 iterator cache also caches point lookups, invalidated by the cache controller's store-wide and (object, relation) markers.
 - **Check cache stamps** (`pkg/storage/cache_freshness.go`, `internal/graph/cached_resolver.go`, `internal/check/check.go`) — check-query cache entries are stamped at computation start, lowered to the oldest cache entry the computation consumed.
+- **Synchronous cache freshness** (`internal/cachecontroller/cache_controller.go`) — a request whose store's changelog was last read more than the controller TTL ago waits for a re-read (shared per store, bounded by 1s) instead of answering from the caches; a read that fails or times out invalidates the whole store. Check results are invalidated from when a change was observed, not from its changelog timestamp.
 
 ## Key Design Decisions
 

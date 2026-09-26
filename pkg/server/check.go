@@ -404,7 +404,12 @@ func (s *Server) v2Check(
 
 	cacheInvalidationTime := time.Time{}
 	if req.GetConsistency() != openfgav1.ConsistencyPreference_HIGHER_CONSISTENCY {
-		cacheInvalidationTime = cacheController.DetermineInvalidationTime(ctx, storeID)
+		var err error
+		cacheInvalidationTime, err = cacheController.DetermineInvalidationTime(ctx, storeID)
+		if err != nil {
+			telemetry.TraceError(span, err)
+			return nil, commands.CheckCommandErrorToServerError(err)
+		}
 	}
 	span.SetAttributes(
 		attribute.Bool("cache_invalidation_active", !cacheInvalidationTime.IsZero()),

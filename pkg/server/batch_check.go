@@ -90,7 +90,10 @@ func (s *Server) BatchCheck(ctx context.Context, req *openfgav1.BatchCheckReques
 		if mgErr == nil {
 			cacheInvalidationTime := time.Time{}
 			if req.GetConsistency() != openfgav1.ConsistencyPreference_HIGHER_CONSISTENCY {
-				cacheInvalidationTime = s.sharedDatastoreResources.CacheController.DetermineInvalidationTime(ctx, storeID)
+				cacheInvalidationTime, err = s.sharedDatastoreResources.CacheController.DetermineInvalidationTime(ctx, storeID)
+				if err != nil {
+					return nil, commands.CheckCommandErrorToServerError(err)
+				}
 			}
 
 			checker = commands.NewCheckQuery(

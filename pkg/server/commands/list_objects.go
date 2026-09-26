@@ -561,13 +561,15 @@ func (q *ListObjectsQuery) Execute(
 		return nil, serverErrors.ValidationError(fmt.Errorf("invalid 'user' value: %w", err))
 	}
 
-	if req.GetConsistency() != openfgav1.ConsistencyPreference_HIGHER_CONSISTENCY {
-		if q.cacheSettings.ShouldCacheListObjectsIterators() {
-			// Kick off background job to check if cache records are stale, invalidating where needed
-			q.sharedDatastoreResources.CacheController.InvalidateIfNeeded(ctx, req.GetStoreId())
+	if req.GetConsistency() != openfgav1.ConsistencyPreference_HIGHER_CONSISTENCY && q.cacheSettings.ShouldCacheListObjectsIterators() {
+		cacheController := q.sharedDatastoreResources.CacheController
+		if q.useShadowCache {
+			cacheController = q.sharedDatastoreResources.ShadowCacheController
 		}
-		if q.cacheSettings.ShouldShadowCacheListObjectsIterators() {
-			q.sharedDatastoreResources.ShadowCacheController.InvalidateIfNeeded(ctx, req.GetStoreId())
+		// The iterator cache is guarded by the markers this writes; the
+		// returned time only applies to cached Check results.
+		if _, err := cacheController.DetermineInvalidationTime(ctx, req.GetStoreId()); err != nil {
+			return nil, err
 		}
 	}
 

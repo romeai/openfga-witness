@@ -21,6 +21,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	openfgav1 "github.com/openfga/api/proto/openfga/v1"
 	parser "github.com/openfga/language/pkg/go/transformer"
@@ -2324,7 +2326,7 @@ func TestCheckWithCachedIterator(t *testing.T) {
 
 // TestCheckWithCachedUserTuple covers the v1 ReadUserTuple cache end to end:
 // a not-found direct lookup is cached, and the (object, relation) marker the
-// cache controller writes for a later write invalidates it without a
+// cache controller writes for a later write invalidates it without another
 // store-wide invalidation.
 func TestCheckWithCachedUserTuple(t *testing.T) {
 	t.Cleanup(func() {
@@ -2347,8 +2349,8 @@ func TestCheckWithCachedUserTuple(t *testing.T) {
 
 	ds := memory.New()
 	require.NoError(t, ds.WriteAuthorizationModel(ctx, storeID, model))
-	// A non-empty changelog keeps the controller off its store-wide
-	// invalidation path; the write ages out of the partial-invalidation window.
+	// The seed write ages out of the iterator TTL, so the controller's read
+	// after the later write invalidates only what that write touched.
 	require.NoError(t, ds.Write(ctx, storeID, nil, []*openfgav1.TupleKey{tuple.NewTupleKey("document:0", "viewer", "user:bob")}))
 	iteratorTTL := 500 * time.Millisecond
 	time.Sleep(2 * iteratorTTL)
@@ -2386,9 +2388,7 @@ func TestCheckWithCachedUserTuple(t *testing.T) {
 	require.False(t, check(openfgav1.ConsistencyPreference_UNSPECIFIED))
 	require.NotNil(t, cachedUserTuple())
 	require.Nil(t, cachedUserTuple().Tuple)
-	require.Eventually(t, func() bool {
-		return cache.Get(storage.ChangelogCacheKey(storeID)) != nil
-	}, 2*time.Second, 10*time.Millisecond)
+	notFoundAt := cachedUserTuple().LastModified
 
 	_, err := s.Write(ctx, &openfgav1.WriteRequest{
 		StoreId:              storeID,
@@ -2405,7 +2405,9 @@ func TestCheckWithCachedUserTuple(t *testing.T) {
 	}, 2*time.Second, 10*time.Millisecond)
 	require.NotNil(t, cachedUserTuple().Tuple)
 	require.NotNil(t, cache.Get(storage.InvalidIteratorByObjectRelationCacheKey(storeID, "document:1", "viewer")))
-	require.Nil(t, cache.Get(storage.InvalidIteratorCacheKey(storeID)))
+	storeInvalidation, _ := cache.Get(storage.InvalidIteratorCacheKey(storeID)).(*storage.InvalidEntityCacheEntry)
+	require.NotNil(t, storeInvalidation, "the store's first changelog read invalidates it as a whole")
+	require.True(t, storeInvalidation.LastModified.Before(notFoundAt))
 }
 
 // writeDuringReadDatastore commits one write while serving a direct-tuple
@@ -2490,6 +2492,144 @@ func TestCheckQueryCacheWriteDuringResolution(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return check("document:1")
 	}, 2*time.Second, 10*time.Millisecond)
+}
+
+// TestCheckAfterQuietPeriodSeesWrite covers a store whose changelog was last
+// read more than the controller TTL ago: the first Check after a write must
+// wait for the changelog read instead of answering from the caches.
+func TestCheckAfterQuietPeriodSeesWrite(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t)
+	})
+
+	ctx := context.Background()
+	storeID := ulid.Make().String()
+	modelID := ulid.Make().String()
+
+	model := parser.MustTransformDSLToProto(`
+		model
+			schema 1.1
+		type user
+		type document
+			relations
+				define viewer: [user]
+	`)
+	model.Id = modelID
+
+	ds := memory.New()
+	require.NoError(t, ds.WriteAuthorizationModel(ctx, storeID, model))
+	require.NoError(t, ds.Write(ctx, storeID, nil, []*openfgav1.TupleKey{tuple.NewTupleKey("document:0", "viewer", "user:bob")}))
+
+	controllerTTL := 50 * time.Millisecond
+	s := MustNewServerWithOpts(
+		WithContext(ctx),
+		WithDatastore(ds),
+		WithCheckCacheLimit(100),
+		WithCheckQueryCacheEnabled(true),
+		WithCheckQueryCacheTTL(time.Hour),
+		WithCheckIteratorCacheEnabled(true),
+		WithCheckIteratorCacheMaxResults(10),
+		WithCheckIteratorCacheTTL(time.Hour),
+		WithCacheControllerEnabled(true),
+		WithCacheControllerTTL(controllerTTL),
+	)
+	t.Cleanup(s.Close)
+
+	check := func() bool {
+		resp, err := s.Check(ctx, &openfgav1.CheckRequest{
+			StoreId:              storeID,
+			TupleKey:             tuple.NewCheckRequestTupleKey("document:1", "viewer", "user:anne"),
+			AuthorizationModelId: modelID,
+		})
+		require.NoError(t, err)
+		return resp.GetAllowed()
+	}
+
+	require.False(t, check())
+	time.Sleep(2 * controllerTTL)
+
+	_, err := s.Write(ctx, &openfgav1.WriteRequest{
+		StoreId:              storeID,
+		AuthorizationModelId: modelID,
+		Writes: &openfgav1.WriteRequestWrites{
+			TupleKeys: []*openfgav1.TupleKey{tuple.NewTupleKey("document:1", "viewer", "user:anne")},
+		},
+	})
+	require.NoError(t, err)
+
+	require.True(t, check())
+}
+
+// earlyChangeTimestampDatastore reports every change a second older than it
+// is, like a SQL changelog whose timestamps are taken when the writing
+// transaction starts rather than when it commits.
+type earlyChangeTimestampDatastore struct {
+	storage.OpenFGADatastore
+}
+
+func (d earlyChangeTimestampDatastore) ReadChanges(ctx context.Context, store string, filter storage.ReadChangesFilter, options storage.ReadChangesOptions) ([]*openfgav1.TupleChange, string, error) {
+	changes, token, err := d.OpenFGADatastore.ReadChanges(ctx, store, filter, options)
+	early := make([]*openfgav1.TupleChange, 0, len(changes))
+	for _, change := range changes {
+		c := proto.Clone(change).(*openfgav1.TupleChange)
+		c.Timestamp = timestamppb.New(change.GetTimestamp().AsTime().Add(-time.Second))
+		early = append(early, c)
+	}
+	return early, token, err
+}
+
+// TestCheckQueryCacheWriteCommittedAfterItsTimestamp covers a Check result
+// computed after a change's changelog timestamp but before the change
+// committed: it misses the change, so it must be invalidated once the
+// controller observes the change.
+func TestCheckQueryCacheWriteCommittedAfterItsTimestamp(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t)
+	})
+
+	ctx := context.Background()
+	storeID := ulid.Make().String()
+	modelID := ulid.Make().String()
+
+	model := parser.MustTransformDSLToProto(`
+		model
+			schema 1.1
+		type user
+		type document
+			relations
+				define viewer: [user]
+	`)
+	model.Id = modelID
+
+	ds := earlyChangeTimestampDatastore{OpenFGADatastore: memory.New()}
+	require.NoError(t, ds.WriteAuthorizationModel(ctx, storeID, model))
+	require.NoError(t, ds.Write(ctx, storeID, nil, []*openfgav1.TupleKey{tuple.NewTupleKey("document:0", "viewer", "user:bob")}))
+
+	s := MustNewServerWithOpts(
+		WithContext(ctx),
+		WithDatastore(ds),
+		WithCheckCacheLimit(100),
+		WithCheckQueryCacheEnabled(true),
+		WithCheckQueryCacheTTL(time.Hour),
+		WithCacheControllerEnabled(true),
+		WithCacheControllerTTL(1*time.Nanosecond),
+	)
+	t.Cleanup(s.Close)
+
+	check := func() bool {
+		resp, err := s.Check(ctx, &openfgav1.CheckRequest{
+			StoreId:              storeID,
+			TupleKey:             tuple.NewCheckRequestTupleKey("document:1", "viewer", "user:anne"),
+			AuthorizationModelId: modelID,
+		})
+		require.NoError(t, err)
+		return resp.GetAllowed()
+	}
+
+	require.False(t, check())
+	require.NoError(t, ds.Write(ctx, storeID, nil, []*openfgav1.TupleKey{tuple.NewTupleKey("document:1", "viewer", "user:anne")}))
+
+	require.Eventually(t, check, time.Second, 10*time.Millisecond)
 }
 
 func TestBatchCheckWithCachedIterator(t *testing.T) {

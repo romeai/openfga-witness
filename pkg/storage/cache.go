@@ -202,8 +202,11 @@ var (
 )
 
 type ChangelogCacheEntry struct {
-	LastModified time.Time // Last time the store was modified
-	LastChecked  time.Time // Last time the changelog was checked
+	LastModified time.Time // Timestamp of the newest change seen in the store's changelog
+	LastChecked  time.Time // Start of the changelog read that produced this entry
+	// InvalidatedAt is when the controller last observed a new change: Check
+	// results stamped before it may predate that change.
+	InvalidatedAt time.Time
 }
 
 func (c *ChangelogCacheEntry) CacheEntityType() string {
