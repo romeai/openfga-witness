@@ -397,6 +397,7 @@ func TestListObjectsEstablishesIteratorCacheFreshness(t *testing.T) {
 		CacheControllerEnabled:             true,
 		CacheControllerTTL:                 1 * time.Nanosecond,
 		CheckCacheLimit:                    1000,
+		CacheControllerMaxMarkersPerStore:  1000,
 	}
 
 	// run executes one ListObjects with mocked controllers, set up by expect.

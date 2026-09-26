@@ -281,15 +281,19 @@ func (c *InMemoryCacheController) refresh(storeID string, caller trace.Link) *st
 	case errors.Is(err, errChangelogPageBudget):
 		c.logger.Warn("cache controller found more changes than its changelog page budget; invalidating every cache entry of the store",
 			zap.String("store_id", storeID), zap.Int("page_budget", maxChangelogPages), zap.Int("page_size", changelogPageSize))
-		c.markers.Invalidate(storage.InvalidIteratorCacheKey(storeID), observedAt)
+		c.markers.InvalidateStore(storeID, observedAt, storage.StoreInvalidationBudget)
 	case err != nil:
+		reason := storage.StoreInvalidationError
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			reason = storage.StoreInvalidationTimeout
+		}
 		telemetry.TraceError(span, err)
 		c.logger.Error("cache controller could not read the changelog; invalidating every cache entry of the store",
-			zap.String("store_id", storeID), zap.Error(err))
-		c.markers.Invalidate(storage.InvalidIteratorCacheKey(storeID), observedAt)
+			zap.String("store_id", storeID), zap.String("reason", string(reason)), zap.Error(err))
+		c.markers.InvalidateStore(storeID, observedAt, reason)
 	case prev == nil:
 		st.recordProcessed(changes)
-		c.markers.Invalidate(storage.InvalidIteratorCacheKey(storeID), observedAt)
+		c.markers.InvalidateStore(storeID, observedAt, storage.StoreInvalidationFirstRead)
 	default:
 		st.recordProcessed(changes)
 		invalidationType = "none"
@@ -299,9 +303,9 @@ func (c *InMemoryCacheController) refresh(storeID string, caller trace.Link) *st
 			st.invalidatedAt = observedAt
 			for _, change := range fresh {
 				tk := change.GetTupleKey()
-				c.markers.Invalidate(storage.InvalidIteratorByObjectRelationCacheKey(storeID, tk.GetObject(), tk.GetRelation()), observedAt)
+				c.markers.Invalidate(storeID, storage.InvalidIteratorByObjectRelationCacheKey(storeID, tk.GetObject(), tk.GetRelation()), observedAt)
 				// Iterators by user cover every relation of the object type.
-				c.markers.Invalidate(storage.InvalidIteratorByUserObjectTypeCacheKey(storeID, tk.GetUser(), tuple.GetType(tk.GetObject())), observedAt)
+				c.markers.Invalidate(storeID, storage.InvalidIteratorByUserObjectTypeCacheKey(storeID, tk.GetUser(), tuple.GetType(tk.GetObject())), observedAt)
 			}
 		}
 	}

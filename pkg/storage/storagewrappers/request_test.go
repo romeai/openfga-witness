@@ -36,7 +36,7 @@ func TestRequestStorageWrapper(t *testing.T) {
 			DataResourceConfiguration{
 				Resources: &shared.SharedDatastoreResources{
 					CheckCache:              mockCache,
-					CheckCacheInvalidations: storage.NewInvalidationMarkers(time.Hour),
+					CheckCacheInvalidations: storage.NewInvalidationMarkers(time.Hour, 100),
 					Logger:                  logger.NewNoopLogger(),
 				},
 				CacheSettings: config.CacheSettings{
@@ -81,7 +81,7 @@ func TestRequestStorageWrapper(t *testing.T) {
 			DataResourceConfiguration{
 				Resources: &shared.SharedDatastoreResources{
 					CheckCache:              mockCache,
-					CheckCacheInvalidations: storage.NewInvalidationMarkers(time.Hour),
+					CheckCacheInvalidations: storage.NewInvalidationMarkers(time.Hour, 100),
 					Logger:                  logger.NewNoopLogger(),
 					SharedIteratorStorage:   sharedIteratorStorage,
 				},
@@ -180,7 +180,7 @@ func TestRequestStorageWrapper(t *testing.T) {
 			DataResourceConfiguration{
 				Resources: &shared.SharedDatastoreResources{
 					CheckCache:              mockCache,
-					CheckCacheInvalidations: storage.NewInvalidationMarkers(time.Hour),
+					CheckCacheInvalidations: storage.NewInvalidationMarkers(time.Hour, 100),
 					Logger:                  logger.NewNoopLogger(),
 				},
 				CacheSettings: config.CacheSettings{
@@ -212,7 +212,7 @@ func TestRequestStorageWrapper(t *testing.T) {
 		mockDatastore := mocks.NewMockRelationshipTupleReader(ctrl)
 		mockCache := mocks.NewMockInMemoryCache[any](ctrl)
 		shadowCache := mocks.NewMockInMemoryCache[any](ctrl)
-		shadowInvalidations := storage.NewInvalidationMarkers(time.Hour)
+		shadowInvalidations := storage.NewInvalidationMarkers(time.Hour, 100)
 
 		requestContextualTuples := []*openfgav1.TupleKey{
 			tuple.NewTupleKey("doc:1", "viewer", "user:maria"),
@@ -223,7 +223,7 @@ func TestRequestStorageWrapper(t *testing.T) {
 			DataResourceConfiguration{
 				Resources: &shared.SharedDatastoreResources{
 					CheckCache:                    mockCache,
-					CheckCacheInvalidations:       storage.NewInvalidationMarkers(time.Hour),
+					CheckCacheInvalidations:       storage.NewInvalidationMarkers(time.Hour, 100),
 					ShadowCheckCache:              shadowCache,
 					ShadowCheckCacheInvalidations: shadowInvalidations,
 					Logger:                        logger.NewNoopLogger(),

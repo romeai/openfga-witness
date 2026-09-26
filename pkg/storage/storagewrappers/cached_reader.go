@@ -263,8 +263,7 @@ func (c *CachedTupleReader) tryGetFromCache(
 		return nil
 	}
 
-	if c.invalidations.Invalidated(cached.LastModified, storage.InvalidIteratorCacheKey(storeID)) ||
-		c.invalidations.Invalidated(cached.LastModified, invalidEntityKeys...) {
+	if c.invalidations.Invalidated(storeID, cached.LastModified, invalidEntityKeys...) {
 		c.cache.Delete(cacheKey)
 		return nil
 	}

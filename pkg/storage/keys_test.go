@@ -533,10 +533,6 @@ func TestEmptyConditionIsDistinct(t *testing.T) {
 func TestInvalidIteratorCacheKeys(t *testing.T) {
 	store := ulid.Make().String()
 
-	t.Run("store_level_valid_hex", func(t *testing.T) {
-		requireValidHex(t, InvalidIteratorCacheKey(store))
-	})
-
 	t.Run("by_object_relation_valid_hex", func(t *testing.T) {
 		requireValidHex(t, InvalidIteratorByObjectRelationCacheKey(store, "document:1", "viewer"))
 	})
@@ -557,13 +553,10 @@ func TestInvalidIteratorCacheKeys(t *testing.T) {
 		require.NotEqual(t, a, b)
 	})
 
-	t.Run("the_three_key_shapes_do_not_collide", func(t *testing.T) {
-		a := InvalidIteratorCacheKey(store)
-		b := InvalidIteratorByObjectRelationCacheKey(store, "x", "y")
-		c := InvalidIteratorByUserObjectTypeCacheKey(store, "x", "y")
+	t.Run("the_two_key_shapes_do_not_collide", func(t *testing.T) {
+		a := InvalidIteratorByObjectRelationCacheKey(store, "x", "y")
+		b := InvalidIteratorByUserObjectTypeCacheKey(store, "x", "y")
 		require.NotEqual(t, a, b)
-		require.NotEqual(t, a, c)
-		require.NotEqual(t, b, c)
 	})
 }
 
@@ -790,12 +783,6 @@ func TestCrossFunction_KeysDoNotCollide(t *testing.T) {
 			Object: "document:1", Relation: "viewer",
 		})
 		require.NotEqual(t, rswuKey, rutKey)
-	})
-
-	t.Run("CheckCacheKey_vs_InvalidIteratorCacheKey", func(t *testing.T) {
-		checkKey := CheckCacheKey(store, "document:1", "viewer", "user:alice", 0)
-		invalidKey := InvalidIteratorCacheKey(store)
-		require.NotEqual(t, checkKey, invalidKey)
 	})
 }
 

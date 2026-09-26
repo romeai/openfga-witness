@@ -198,16 +198,6 @@ var (
 	_ CacheItem = (*UserTupleCacheEntry)(nil)
 )
 
-// InvalidIteratorCacheKey returns the store-wide iterator invalidation key.
-func InvalidIteratorCacheKey(storeID string) keys.Key {
-	builder := keys.GetBuilder()
-	defer builder.Close()
-
-	builder.EncodeString(PrefixInvalidIteratorCache)
-	builder.EncodeString(storeID)
-	return builder.Key()
-}
-
 // InvalidIteratorByObjectRelationCacheKey returns the invalidation key scoped to a specific object and relation.
 func InvalidIteratorByObjectRelationCacheKey(storeID, object, relation string) keys.Key {
 	builder := keys.GetBuilder()

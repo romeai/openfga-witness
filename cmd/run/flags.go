@@ -261,6 +261,9 @@ func bindRunFlagsFunc(flags *pflag.FlagSet) func(*cobra.Command, []string) {
 		util.MustBindPFlag("cacheController.ttl", flags.Lookup("cache-controller-ttl"))
 		util.MustBindEnv("cacheController.ttl", "OPENFGA_CACHE_CONTROLLER_TTL")
 
+		util.MustBindPFlag("cacheController.maxMarkersPerStore", flags.Lookup("cache-controller-max-markers-per-store"))
+		util.MustBindEnv("cacheController.maxMarkersPerStore", "OPENFGA_CACHE_CONTROLLER_MAX_MARKERS_PER_STORE")
+
 		util.MustBindPFlag("cacheTTLJitterPercentage", flags.Lookup("cache-ttl-jitter-percentage"))
 		util.MustBindEnv("cacheTTLJitterPercentage", "OPENFGA_CACHE_TTL_JITTER_PERCENTAGE")
 

@@ -40,7 +40,7 @@ func TestCachedTupleReader_ReadUsersetTuples_CacheMiss(t *testing.T) {
 	sf := &singleflight.Group{}
 	wg := &sync.WaitGroup{}
 
-	markers := storage.NewInvalidationMarkers(time.Hour)
+	markers := storage.NewInvalidationMarkers(time.Hour, 100)
 	reader := NewCachedTupleReader(ctx, mockDatastore, mockCache, markers, 1000, time.Hour, sf, wg, 30*time.Second)
 
 	filter := storage.ReadUsersetTuplesFilter{
@@ -89,7 +89,7 @@ func TestCachedTupleReader_ReadUsersetTuples_CacheHit(t *testing.T) {
 	sf := &singleflight.Group{}
 	wg := &sync.WaitGroup{}
 
-	markers := storage.NewInvalidationMarkers(time.Hour)
+	markers := storage.NewInvalidationMarkers(time.Hour, 100)
 	reader := NewCachedTupleReader(ctx, mockDatastore, mockCache, markers, 1000, time.Hour, sf, wg, 30*time.Second)
 
 	filter := storage.ReadUsersetTuplesFilter{
@@ -150,7 +150,7 @@ func TestCachedTupleReader_ReadUsersetTuples_HigherConsistency(t *testing.T) {
 	sf := &singleflight.Group{}
 	wg := &sync.WaitGroup{}
 
-	markers := storage.NewInvalidationMarkers(time.Hour)
+	markers := storage.NewInvalidationMarkers(time.Hour, 100)
 	reader := NewCachedTupleReader(ctx, mockDatastore, mockCache, markers, 1000, time.Hour, sf, wg, 30*time.Second)
 
 	filter := storage.ReadUsersetTuplesFilter{
@@ -192,7 +192,7 @@ func TestCachedTupleReader_ReadUsersetTuples_StoreInvalidation(t *testing.T) {
 	sf := &singleflight.Group{}
 	wg := &sync.WaitGroup{}
 
-	markers := storage.NewInvalidationMarkers(time.Hour)
+	markers := storage.NewInvalidationMarkers(time.Hour, 100)
 	reader := NewCachedTupleReader(ctx, mockDatastore, mockCache, markers, 1000, time.Hour, sf, wg, 30*time.Second)
 
 	filter := storage.ReadUsersetTuplesFilter{
@@ -218,7 +218,7 @@ func TestCachedTupleReader_ReadUsersetTuples_StoreInvalidation(t *testing.T) {
 	mockCache.EXPECT().Get(cacheKey).Return(cachedEntry).Times(1)
 
 	// Store invalidation check - returns invalidation entry that is newer
-	markers.Invalidate(storage.InvalidIteratorCacheKey(storeID), invalidatedAt)
+	markers.InvalidateStore(storeID, invalidatedAt, storage.StoreInvalidationFirstRead)
 
 	// Cache entry should be deleted
 	mockCache.EXPECT().Delete(cacheKey).Times(1)
@@ -251,7 +251,7 @@ func TestCachedTupleReader_ReadUsersetTuples_EntityInvalidation(t *testing.T) {
 	sf := &singleflight.Group{}
 	wg := &sync.WaitGroup{}
 
-	markers := storage.NewInvalidationMarkers(time.Hour)
+	markers := storage.NewInvalidationMarkers(time.Hour, 100)
 	reader := NewCachedTupleReader(ctx, mockDatastore, mockCache, markers, 1000, time.Hour, sf, wg, 30*time.Second)
 
 	filter := storage.ReadUsersetTuplesFilter{
@@ -278,7 +278,7 @@ func TestCachedTupleReader_ReadUsersetTuples_EntityInvalidation(t *testing.T) {
 	mockCache.EXPECT().Get(cacheKey).Return(cachedEntry).Times(1)
 
 	// Entity invalidation check - entity was invalidated
-	markers.Invalidate(entityInvalidKey, invalidatedAt)
+	markers.Invalidate(storeID, entityInvalidKey, invalidatedAt)
 
 	// Cache entry should be deleted
 	mockCache.EXPECT().Delete(cacheKey).Times(1)
@@ -309,7 +309,7 @@ func TestCachedTupleReader_ReadUsersetTuples_InvalidationOlderThanCache(t *testi
 	sf := &singleflight.Group{}
 	wg := &sync.WaitGroup{}
 
-	markers := storage.NewInvalidationMarkers(time.Hour)
+	markers := storage.NewInvalidationMarkers(time.Hour, 100)
 	reader := NewCachedTupleReader(ctx, mockDatastore, mockCache, markers, 1000, time.Hour, sf, wg, 30*time.Second)
 
 	filter := storage.ReadUsersetTuplesFilter{
@@ -331,7 +331,7 @@ func TestCachedTupleReader_ReadUsersetTuples_InvalidationOlderThanCache(t *testi
 	mockCache.EXPECT().Get(cacheKey).Return(cachedEntry).Times(1)
 
 	// Store invalidation check - invalidation is older than cache
-	markers.Invalidate(storage.InvalidIteratorCacheKey(storeID), invalidatedAt)
+	markers.InvalidateStore(storeID, invalidatedAt, storage.StoreInvalidationFirstRead)
 
 	// No delete expected - cache entry is valid
 
@@ -359,7 +359,7 @@ func TestCachedTupleReader_ReadUsersetTuples_DelegateError(t *testing.T) {
 	sf := &singleflight.Group{}
 	wg := &sync.WaitGroup{}
 
-	markers := storage.NewInvalidationMarkers(time.Hour)
+	markers := storage.NewInvalidationMarkers(time.Hour, 100)
 	reader := NewCachedTupleReader(ctx, mockDatastore, mockCache, markers, 1000, time.Hour, sf, wg, 30*time.Second)
 
 	filter := storage.ReadUsersetTuplesFilter{
@@ -401,7 +401,7 @@ func TestCachedTupleReader_Read_CacheMiss(t *testing.T) {
 	sf := &singleflight.Group{}
 	wg := &sync.WaitGroup{}
 
-	markers := storage.NewInvalidationMarkers(time.Hour)
+	markers := storage.NewInvalidationMarkers(time.Hour, 100)
 	reader := NewCachedTupleReader(ctx, mockDatastore, mockCache, markers, 1000, time.Hour, sf, wg, 30*time.Second)
 
 	filter := storage.ReadFilter{
@@ -448,7 +448,7 @@ func TestCachedTupleReader_Read_CacheHit(t *testing.T) {
 	sf := &singleflight.Group{}
 	wg := &sync.WaitGroup{}
 
-	markers := storage.NewInvalidationMarkers(time.Hour)
+	markers := storage.NewInvalidationMarkers(time.Hour, 100)
 	reader := NewCachedTupleReader(ctx, mockDatastore, mockCache, markers, 1000, time.Hour, sf, wg, 30*time.Second)
 
 	filter := storage.ReadFilter{
@@ -500,7 +500,7 @@ func TestCachedTupleReader_HitsAgeTheEnclosingComputation(t *testing.T) {
 	cache, err := storage.NewInMemoryLRUCache[any]()
 	require.NoError(t, err)
 	defer cache.Stop()
-	reader := NewCachedTupleReader(ctx, mocks.NewMockRelationshipTupleReader(gomock.NewController(t)), cache, storage.NewInvalidationMarkers(time.Hour), 1000, time.Hour, &singleflight.Group{}, &sync.WaitGroup{}, 30*time.Second)
+	reader := NewCachedTupleReader(ctx, mocks.NewMockRelationshipTupleReader(gomock.NewController(t)), cache, storage.NewInvalidationMarkers(time.Hour, 100), 1000, time.Hour, &singleflight.Group{}, &sync.WaitGroup{}, 30*time.Second)
 
 	entry := &V2IteratorCacheEntry{Entries: []MinimalCacheEntry{{ObjectID: "1", User: "folder:a"}}, LastModified: consumed}
 	readFilter := storage.ReadFilter{Object: "document:1", Relation: "parent", User: "folder:"}
@@ -548,7 +548,7 @@ func TestCachedTupleReader_Read_HigherConsistency(t *testing.T) {
 	sf := &singleflight.Group{}
 	wg := &sync.WaitGroup{}
 
-	markers := storage.NewInvalidationMarkers(time.Hour)
+	markers := storage.NewInvalidationMarkers(time.Hour, 100)
 	reader := NewCachedTupleReader(ctx, mockDatastore, mockCache, markers, 1000, time.Hour, sf, wg, 30*time.Second)
 
 	filter := storage.ReadFilter{
@@ -587,7 +587,7 @@ func TestCachedTupleReader_Read_EntityInvalidation(t *testing.T) {
 	sf := &singleflight.Group{}
 	wg := &sync.WaitGroup{}
 
-	markers := storage.NewInvalidationMarkers(time.Hour)
+	markers := storage.NewInvalidationMarkers(time.Hour, 100)
 	reader := NewCachedTupleReader(ctx, mockDatastore, mockCache, markers, 1000, time.Hour, sf, wg, 30*time.Second)
 
 	filter := storage.ReadFilter{
@@ -615,7 +615,7 @@ func TestCachedTupleReader_Read_EntityInvalidation(t *testing.T) {
 	mockCache.EXPECT().Get(cacheKey).Return(cachedEntry).Times(1)
 
 	// Entity invalidation check - entity was invalidated
-	markers.Invalidate(entityInvalidKey, invalidatedAt)
+	markers.Invalidate(storeID, entityInvalidKey, invalidatedAt)
 
 	// Cache entry should be deleted
 	mockCache.EXPECT().Delete(cacheKey).Times(1)
@@ -650,7 +650,7 @@ func TestCachedTupleReader_ReadStartingWithUser_CacheMiss(t *testing.T) {
 	sf := &singleflight.Group{}
 	wg := &sync.WaitGroup{}
 
-	markers := storage.NewInvalidationMarkers(time.Hour)
+	markers := storage.NewInvalidationMarkers(time.Hour, 100)
 	reader := NewCachedTupleReader(ctx, mockDatastore, mockCache, markers, 1000, time.Hour, sf, wg, 30*time.Second)
 
 	filter := storage.ReadStartingWithUserFilter{
@@ -698,7 +698,7 @@ func TestCachedTupleReader_ReadStartingWithUser_CacheHit(t *testing.T) {
 	sf := &singleflight.Group{}
 	wg := &sync.WaitGroup{}
 
-	markers := storage.NewInvalidationMarkers(time.Hour)
+	markers := storage.NewInvalidationMarkers(time.Hour, 100)
 	reader := NewCachedTupleReader(ctx, mockDatastore, mockCache, markers, 1000, time.Hour, sf, wg, 30*time.Second)
 
 	filter := storage.ReadStartingWithUserFilter{
@@ -756,7 +756,7 @@ func TestCachedTupleReader_ReadStartingWithUser_CacheHit_UsersetFilter(t *testin
 	sf := &singleflight.Group{}
 	wg := &sync.WaitGroup{}
 
-	markers := storage.NewInvalidationMarkers(time.Hour)
+	markers := storage.NewInvalidationMarkers(time.Hour, 100)
 	reader := NewCachedTupleReader(ctx, mockDatastore, mockCache, markers, 1000, time.Hour, sf, wg, 30*time.Second)
 
 	filter := storage.ReadStartingWithUserFilter{
@@ -811,7 +811,7 @@ func TestCachedTupleReader_ReadStartingWithUser_HigherConsistency(t *testing.T) 
 	sf := &singleflight.Group{}
 	wg := &sync.WaitGroup{}
 
-	markers := storage.NewInvalidationMarkers(time.Hour)
+	markers := storage.NewInvalidationMarkers(time.Hour, 100)
 	reader := NewCachedTupleReader(ctx, mockDatastore, mockCache, markers, 1000, time.Hour, sf, wg, 30*time.Second)
 
 	filter := storage.ReadStartingWithUserFilter{
@@ -852,7 +852,7 @@ func TestCachedTupleReader_ReadStartingWithUser_EntityInvalidation(t *testing.T)
 	sf := &singleflight.Group{}
 	wg := &sync.WaitGroup{}
 
-	markers := storage.NewInvalidationMarkers(time.Hour)
+	markers := storage.NewInvalidationMarkers(time.Hour, 100)
 	reader := NewCachedTupleReader(ctx, mockDatastore, mockCache, markers, 1000, time.Hour, sf, wg, 30*time.Second)
 
 	filter := storage.ReadStartingWithUserFilter{
@@ -882,7 +882,7 @@ func TestCachedTupleReader_ReadStartingWithUser_EntityInvalidation(t *testing.T)
 	mockCache.EXPECT().Get(cacheKey).Return(cachedEntry).Times(1)
 
 	// User entity invalidation check - entity was invalidated
-	markers.Invalidate(userInvalidKeys[0], invalidatedAt)
+	markers.Invalidate(storeID, userInvalidKeys[0], invalidatedAt)
 
 	// Cache entry should be deleted
 	mockCache.EXPECT().Delete(cacheKey).Times(1)
@@ -917,7 +917,7 @@ func TestCachedTupleReader_ReadUserTuple_Delegates(t *testing.T) {
 	sf := &singleflight.Group{}
 	wg := &sync.WaitGroup{}
 
-	markers := storage.NewInvalidationMarkers(time.Hour)
+	markers := storage.NewInvalidationMarkers(time.Hour, 100)
 	reader := NewCachedTupleReader(ctx, mockDatastore, mockCache, markers, 1000, time.Hour, sf, wg, 30*time.Second)
 
 	filter := storage.ReadUserTupleFilter{
@@ -955,7 +955,7 @@ func TestCachedTupleReader_ReadPage_Delegates(t *testing.T) {
 	sf := &singleflight.Group{}
 	wg := &sync.WaitGroup{}
 
-	markers := storage.NewInvalidationMarkers(time.Hour)
+	markers := storage.NewInvalidationMarkers(time.Hour, 100)
 	reader := NewCachedTupleReader(ctx, mockDatastore, mockCache, markers, 1000, time.Hour, sf, wg, 30*time.Second)
 
 	filter := storage.ReadFilter{
@@ -1001,7 +1001,7 @@ func TestCachedTupleReader_DefaultMaxSize(t *testing.T) {
 	wg := &sync.WaitGroup{}
 
 	// Pass 0 for maxSize - should default to 1000
-	reader := NewCachedTupleReader(ctx, mockDatastore, mockCache, storage.NewInvalidationMarkers(time.Hour), 0, time.Hour, sf, wg, 30*time.Second)
+	reader := NewCachedTupleReader(ctx, mockDatastore, mockCache, storage.NewInvalidationMarkers(time.Hour, 100), 0, time.Hour, sf, wg, 30*time.Second)
 
 	require.Equal(t, maxCachedElements, reader.maxSize)
 }
@@ -1022,7 +1022,7 @@ func TestCachedTupleReader_CustomMaxSize(t *testing.T) {
 	wg := &sync.WaitGroup{}
 
 	customMaxSize := 500
-	reader := NewCachedTupleReader(ctx, mockDatastore, mockCache, storage.NewInvalidationMarkers(time.Hour), customMaxSize, time.Hour, sf, wg, 30*time.Second)
+	reader := NewCachedTupleReader(ctx, mockDatastore, mockCache, storage.NewInvalidationMarkers(time.Hour, 100), customMaxSize, time.Hour, sf, wg, 30*time.Second)
 
 	require.Equal(t, customMaxSize, reader.maxSize)
 }
@@ -1095,7 +1095,7 @@ func TestCachedTupleReader_CacheRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	defer realCache.Stop()
 
-	reader := NewCachedTupleReader(ctx, mockDatastore, realCache, storage.NewInvalidationMarkers(time.Hour), 1000, time.Hour, sf, wg, 30*time.Second)
+	reader := NewCachedTupleReader(ctx, mockDatastore, realCache, storage.NewInvalidationMarkers(time.Hour, 100), 1000, time.Hour, sf, wg, 30*time.Second)
 
 	filter := storage.ReadUsersetTuplesFilter{
 		Object:   "document:1",

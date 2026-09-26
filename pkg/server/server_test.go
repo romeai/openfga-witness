@@ -2401,8 +2401,8 @@ func TestCheckWithCachedUserTuple(t *testing.T) {
 	}, 2*time.Second, 10*time.Millisecond)
 	require.NotNil(t, cachedUserTuple().Tuple)
 	markers := s.sharedDatastoreResources.CheckCacheInvalidations
-	require.True(t, markers.Invalidated(notFoundAt, storage.InvalidIteratorByObjectRelationCacheKey(storeID, "document:1", "viewer")))
-	require.False(t, markers.Invalidated(notFoundAt, storage.InvalidIteratorCacheKey(storeID)),
+	require.True(t, markers.Invalidated(storeID, notFoundAt, storage.InvalidIteratorByObjectRelationCacheKey(storeID, "document:1", "viewer")))
+	require.False(t, markers.Invalidated(storeID, notFoundAt),
 		"the store's first changelog read invalidates it as a whole, before the lookup was cached")
 }
 

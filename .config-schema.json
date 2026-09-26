@@ -644,6 +644,13 @@
                     "format": "duration",
                     "default": "10s",
                     "x-env-variable": "OPENFGA_CACHE_CONTROLLER_TTL"
+                },
+                "maxMarkersPerStore": {
+                    "description": "the most per-entity invalidation markers the cache controller keeps for one store; past it every cache entry of the store is invalidated instead. Bounds the markers' memory, about 140 bytes each.",
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": 100000,
+                    "x-env-variable": "OPENFGA_CACHE_CONTROLLER_MAX_MARKERS_PER_STORE"
                 }
             }
         },

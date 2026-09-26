@@ -1402,6 +1402,10 @@ func TestDefaultConfig(t *testing.T) {
 	require.True(t, val.Exists())
 	require.Equal(t, val.String(), cfg.CacheController.TTL.String())
 
+	val = res.Get("properties.cacheController.properties.maxMarkersPerStore.default")
+	require.True(t, val.Exists())
+	require.EqualValues(t, val.Int(), cfg.CacheController.MaxMarkersPerStore)
+
 	val = res.Get("properties.sharedIterator.properties.enabled.default")
 	require.True(t, val.Exists())
 	require.Equal(t, val.Bool(), cfg.SharedIterator.Enabled)
@@ -1629,6 +1633,7 @@ func TestRunCommandConfigIsMerged(t *testing.T) {
 	t.Setenv("OPENFGA_CHECK_QUERY_CACHE_TTL", "5s")
 	t.Setenv("OPENFGA_CACHE_CONTROLLER_ENABLED", "true")
 	t.Setenv("OPENFGA_CACHE_CONTROLLER_TTL", "4s")
+	t.Setenv("OPENFGA_CACHE_CONTROLLER_MAX_MARKERS_PER_STORE", "77")
 	t.Setenv("OPENFGA_REQUEST_DURATION_DATASTORE_QUERY_COUNT_BUCKETS", "33 44")
 	t.Setenv("OPENFGA_DISPATCH_THROTTLING_ENABLED", "true")
 	t.Setenv("OPENFGA_DISPATCH_THROTTLING_FREQUENCY", "1ms")
@@ -1652,6 +1657,7 @@ func TestRunCommandConfigIsMerged(t *testing.T) {
 		require.Equal(t, 5*time.Second, viper.GetDuration("check-query-cache-ttl"))
 		require.True(t, viper.GetBool("cache-controller-enabled"))
 		require.Equal(t, 4*time.Second, viper.GetDuration("cache-controller-ttl"))
+		require.Equal(t, uint32(77), viper.GetUint32("cache-controller-max-markers-per-store"))
 
 		require.Equal(t, []string{"33", "44"}, viper.GetStringSlice("request-duration-datastore-query-count-buckets"))
 		require.True(t, viper.GetBool("dispatch-throttling-enabled"))

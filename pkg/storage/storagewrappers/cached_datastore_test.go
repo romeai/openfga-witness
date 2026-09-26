@@ -48,72 +48,69 @@ func TestFindInCache(t *testing.T) {
 	var kb keys.Builder
 	kb.EncodeString("key")
 	key := kb.Key()
-	storeKey := storage.InvalidIteratorCacheKey(storeID)
 	entityKey := storage.InvalidIteratorByObjectRelationCacheKey(storeID, "object", "relation")
-	guards := []keys.Key{storeKey, entityKey}
+	guards := []keys.Key{entityKey}
 	stamp := time.Now()
 
 	setup := func() (*storageTest.MapCache, *storage.InvalidationMarkers) {
 		cache := storageTest.NewMapCache()
 		cache.Set(key, &storage.TupleIteratorCacheEntry{Tuples: []*storage.TupleRecord{}, LastModified: stamp}, time.Hour)
-		return cache, storage.NewInvalidationMarkers(time.Hour)
+		return cache, storage.NewInvalidationMarkers(time.Hour, 100)
 	}
 
 	t.Run("cache_miss", func(t *testing.T) {
-		_, ok := findInCache(storageTest.NewMapCache(), storage.NewInvalidationMarkers(time.Hour), key, guards)
+		_, ok := findInCache(storageTest.NewMapCache(), storage.NewInvalidationMarkers(time.Hour, 100), storeID, key, guards)
 		require.False(t, ok)
 	})
 	t.Run("cache_hit_no_invalid", func(t *testing.T) {
 		cache, markers := setup()
-		_, ok := findInCache(cache, markers, key, guards)
+		_, ok := findInCache(cache, markers, storeID, key, guards)
 		require.True(t, ok)
 	})
 	t.Run("cache_hit_bad_result", func(t *testing.T) {
 		cache, markers := setup()
 		cache.Set(key, "invalid", time.Hour)
-		_, ok := findInCache(cache, markers, key, guards)
+		_, ok := findInCache(cache, markers, storeID, key, guards)
 		require.False(t, ok)
 	})
 	t.Run("store_marker_after_stamp_invalidates_and_deletes", func(t *testing.T) {
 		cache, markers := setup()
-		markers.Invalidate(storeKey, stamp.Add(time.Second))
-		_, ok := findInCache(cache, markers, key, guards)
+		markers.InvalidateStore(storeID, stamp.Add(time.Second), storage.StoreInvalidationFirstRead)
+		_, ok := findInCache(cache, markers, storeID, key, guards)
 		require.False(t, ok)
 		require.Nil(t, cache.Get(key))
 	})
 	t.Run("store_marker_before_stamp_keeps", func(t *testing.T) {
 		cache, markers := setup()
-		markers.Invalidate(storeKey, stamp.Add(-time.Second))
-		_, ok := findInCache(cache, markers, key, guards)
+		markers.InvalidateStore(storeID, stamp.Add(-time.Second), storage.StoreInvalidationFirstRead)
+		_, ok := findInCache(cache, markers, storeID, key, guards)
 		require.True(t, ok)
 	})
 	t.Run("entity_marker_after_stamp_invalidates_and_deletes", func(t *testing.T) {
 		cache, markers := setup()
-		markers.Invalidate(entityKey, stamp.Add(time.Second))
-		_, ok := findInCache(cache, markers, key, guards)
+		markers.Invalidate(storeID, entityKey, stamp.Add(time.Second))
+		_, ok := findInCache(cache, markers, storeID, key, guards)
 		require.False(t, ok)
 		require.Nil(t, cache.Get(key))
 	})
 	t.Run("entity_marker_before_stamp_keeps", func(t *testing.T) {
 		cache, markers := setup()
-		markers.Invalidate(entityKey, stamp.Add(-time.Second))
-		_, ok := findInCache(cache, markers, key, guards)
+		markers.Invalidate(storeID, entityKey, stamp.Add(-time.Second))
+		_, ok := findInCache(cache, markers, storeID, key, guards)
 		require.True(t, ok)
 	})
 	t.Run("unrelated_marker_keeps", func(t *testing.T) {
 		cache, markers := setup()
-		markers.Invalidate(storage.InvalidIteratorByObjectRelationCacheKey(storeID, "other", "relation"), stamp.Add(time.Second))
-		_, ok := findInCache(cache, markers, key, guards)
+		markers.Invalidate(storeID, storage.InvalidIteratorByObjectRelationCacheKey(storeID, "other", "relation"), stamp.Add(time.Second))
+		_, ok := findInCache(cache, markers, storeID, key, guards)
 		require.True(t, ok)
 	})
 	t.Run("result_cache_eviction_cannot_revive_an_invalidated_entry", func(t *testing.T) {
 		cache, markers := setup()
-		markers.Invalidate(entityKey, stamp.Add(time.Second))
+		markers.Invalidate(storeID, entityKey, stamp.Add(time.Second))
 		// Evict everything the result cache holds except the entry itself.
-		for _, k := range []keys.Key{storeKey, entityKey} {
-			cache.Delete(k)
-		}
-		_, ok := findInCache(cache, markers, key, guards)
+		cache.Delete(entityKey)
+		_, ok := findInCache(cache, markers, storeID, key, guards)
 		require.False(t, ok)
 	})
 }
@@ -134,7 +131,7 @@ func TestReadStartingWithUser(t *testing.T) {
 	ttl := 5 * time.Hour
 	sf := &singleflight.Group{}
 	wg := &sync.WaitGroup{}
-	invalidations := storage.NewInvalidationMarkers(ttl)
+	invalidations := storage.NewInvalidationMarkers(ttl, 100)
 	ds := NewCachedDatastore(ctx, mockDatastore, mockCache, invalidations, maxSize, ttl, sf, wg)
 
 	storeID := ulid.Make().String()
@@ -366,7 +363,7 @@ func TestReadStartingWithUser(t *testing.T) {
 	})
 
 	t.Run("marker_newer_than_the_entry_invalidates_it", func(t *testing.T) {
-		invalidations.Invalidate(invalidEntityKeys[1], time.Now())
+		invalidations.Invalidate(storeID, invalidEntityKeys[1], time.Now())
 		gomock.InOrder(
 			mockCache.EXPECT().Get(storage.ReadStartingWithUserKey(storeID, filter)).Return(&storage.TupleIteratorCacheEntry{Tuples: cachedTuples, LastModified: time.Now().Add(-time.Hour)}),
 			mockCache.EXPECT().Delete(storage.ReadStartingWithUserKey(storeID, filter)),
@@ -398,7 +395,7 @@ func TestReadUsersetTuples(t *testing.T) {
 	ttl := 5 * time.Hour
 	sf := &singleflight.Group{}
 	wg := &sync.WaitGroup{}
-	invalidations := storage.NewInvalidationMarkers(ttl)
+	invalidations := storage.NewInvalidationMarkers(ttl, 100)
 	ds := NewCachedDatastore(ctx, mockDatastore, mockCache, invalidations, maxSize, ttl, sf, wg)
 
 	storeID := ulid.Make().String()
@@ -590,7 +587,7 @@ func TestReadUsersetTuples(t *testing.T) {
 	})
 
 	t.Run("marker_newer_than_the_entry_invalidates_it", func(t *testing.T) {
-		invalidations.Invalidate(invalidEntityKey, time.Now())
+		invalidations.Invalidate(storeID, invalidEntityKey, time.Now())
 		gomock.InOrder(
 			mockCache.EXPECT().Get(cacheKey).Return(&storage.TupleIteratorCacheEntry{Tuples: cachedTuples, LastModified: time.Now().Add(-time.Hour)}),
 			mockCache.EXPECT().Delete(cacheKey),
@@ -623,7 +620,7 @@ func TestRead(t *testing.T) {
 	ttl := 5 * time.Hour
 	sf := &singleflight.Group{}
 	wg := &sync.WaitGroup{}
-	invalidations := storage.NewInvalidationMarkers(ttl)
+	invalidations := storage.NewInvalidationMarkers(ttl, 100)
 	ds := NewCachedDatastore(ctx, mockDatastore, mockCache, invalidations, maxSize, ttl, sf, wg)
 
 	storeID := ulid.Make().String()
@@ -845,7 +842,7 @@ func TestRead(t *testing.T) {
 	})
 
 	t.Run("marker_newer_than_the_entry_invalidates_it", func(t *testing.T) {
-		invalidations.Invalidate(invalidEntityKey, time.Now())
+		invalidations.Invalidate(storeID, invalidEntityKey, time.Now())
 		gomock.InOrder(
 			mockCache.EXPECT().Get(cacheKey).Return(&storage.TupleIteratorCacheEntry{Tuples: cachedTuples, LastModified: time.Now().Add(-time.Hour)}),
 			mockCache.EXPECT().Delete(cacheKey),
@@ -877,7 +874,6 @@ func TestReadUserTuple(t *testing.T) {
 		Consistency: storage.ConsistencyOptions{Preference: openfgav1.ConsistencyPreference_HIGHER_CONSISTENCY},
 	}
 	objectRelationMarker := storage.InvalidIteratorByObjectRelationCacheKey(storeID, tk.GetObject(), tk.GetRelation())
-	storeMarker := storage.InvalidIteratorCacheKey(storeID)
 	ttl := 5 * time.Hour
 
 	setup := func(t *testing.T) (*CachedDatastore, *mocks.MockOpenFGADatastore, storage.InMemoryCache[any]) {
@@ -885,7 +881,7 @@ func TestReadUserTuple(t *testing.T) {
 		require.NoError(t, err)
 		t.Cleanup(cache.Stop)
 		inner := mocks.NewMockOpenFGADatastore(gomock.NewController(t))
-		return NewCachedDatastore(ctx, inner, cache, storage.NewInvalidationMarkers(ttl), 10, ttl, &singleflight.Group{}, &sync.WaitGroup{}), inner, cache
+		return NewCachedDatastore(ctx, inner, cache, storage.NewInvalidationMarkers(ttl, 100), 10, ttl, &singleflight.Group{}, &sync.WaitGroup{}), inner, cache
 	}
 	requireFound := func(t *testing.T, got *openfgav1.Tuple, err error) {
 		t.Helper()
@@ -895,7 +891,7 @@ func TestReadUserTuple(t *testing.T) {
 		}
 	}
 	markAt := func(ds *CachedDatastore, marker keys.Key, at time.Time) {
-		ds.invalidations.Invalidate(marker, at)
+		ds.invalidations.Invalidate(storeID, marker, at)
 	}
 
 	t.Run("found_is_served_from_cache_stamped_at_query_start", func(t *testing.T) {
@@ -961,9 +957,11 @@ func TestReadUserTuple(t *testing.T) {
 		require.ErrorIs(t, err, storage.ErrNotFound)
 	})
 
-	for name, marker := range map[string]keys.Key{
-		"object_relation_marker": objectRelationMarker,
-		"store_marker":           storeMarker,
+	for name, mark := range map[string]func(ds *CachedDatastore, at time.Time){
+		"object_relation_marker": func(ds *CachedDatastore, at time.Time) { markAt(ds, objectRelationMarker, at) },
+		"store_marker": func(ds *CachedDatastore, at time.Time) {
+			ds.invalidations.InvalidateStore(storeID, at, storage.StoreInvalidationFirstRead)
+		},
 	} {
 		t.Run(name+"_newer_than_the_entry_invalidates_it", func(t *testing.T) {
 			ds, inner, cache := setup(t)
@@ -977,7 +975,7 @@ func TestReadUserTuple(t *testing.T) {
 
 			entry, ok := cache.Get(storage.ReadUserTupleKey(storeID, filter)).(*storage.UserTupleCacheEntry)
 			require.True(t, ok)
-			markAt(ds, marker, entry.LastModified.Add(time.Nanosecond))
+			mark(ds, entry.LastModified.Add(time.Nanosecond))
 
 			got, err := ds.ReadUserTuple(ctx, storeID, filter, defaultOpts)
 			requireFound(t, got, err)
@@ -987,7 +985,7 @@ func TestReadUserTuple(t *testing.T) {
 
 		t.Run(name+"_older_than_the_entry_keeps_it", func(t *testing.T) {
 			ds, inner, _ := setup(t)
-			markAt(ds, marker, time.Now().Add(-time.Second))
+			mark(ds, time.Now().Add(-time.Second))
 			inner.EXPECT().ReadUserTuple(gomock.Any(), storeID, filter, defaultOpts).Return(stored, nil).Times(1)
 
 			for range 2 {
@@ -1007,7 +1005,7 @@ func TestReadUserTuple(t *testing.T) {
 		now := time.Now()
 		markAt(ds, storage.InvalidIteratorByObjectRelationCacheKey(storeID, "document:2", tk.GetRelation()), now)
 		markAt(ds, storage.InvalidIteratorByObjectRelationCacheKey(storeID, tk.GetObject(), "editor"), now)
-		markAt(ds, storage.InvalidIteratorCacheKey(ulid.Make().String()), now)
+		ds.invalidations.InvalidateStore(ulid.Make().String(), now, storage.StoreInvalidationFirstRead)
 
 		got, err = ds.ReadUserTuple(ctx, storeID, filter, defaultOpts)
 		requireFound(t, got, err)
@@ -1089,7 +1087,7 @@ func TestReadUserTuple(t *testing.T) {
 	t.Run("entry_lives_its_ttl_from_the_query_start", func(t *testing.T) {
 		cache := newTTLRecordingCache()
 		inner := mocks.NewMockOpenFGADatastore(gomock.NewController(t))
-		ds := NewCachedDatastore(ctx, inner, cache, storage.NewInvalidationMarkers(ttl), 10, ttl, &singleflight.Group{}, &sync.WaitGroup{})
+		ds := NewCachedDatastore(ctx, inner, cache, storage.NewInvalidationMarkers(ttl, 100), 10, ttl, &singleflight.Group{}, &sync.WaitGroup{})
 		queryTime := 20 * time.Millisecond
 		inner.EXPECT().ReadUserTuple(gomock.Any(), storeID, filter, defaultOpts).
 			DoAndReturn(func(context.Context, string, storage.ReadUserTupleFilter, storage.ReadUserTupleOptions) (*openfgav1.Tuple, error) {
@@ -1106,7 +1104,7 @@ func TestReadUserTuple(t *testing.T) {
 		cache := newTTLRecordingCache()
 		inner := mocks.NewMockOpenFGADatastore(gomock.NewController(t))
 		shortTTL := 5 * time.Millisecond
-		ds := NewCachedDatastore(ctx, inner, cache, storage.NewInvalidationMarkers(shortTTL), 10, shortTTL, &singleflight.Group{}, &sync.WaitGroup{})
+		ds := NewCachedDatastore(ctx, inner, cache, storage.NewInvalidationMarkers(shortTTL, 100), 10, shortTTL, &singleflight.Group{}, &sync.WaitGroup{})
 		inner.EXPECT().ReadUserTuple(gomock.Any(), storeID, filter, defaultOpts).
 			DoAndReturn(func(context.Context, string, storage.ReadUserTupleFilter, storage.ReadUserTupleOptions) (*openfgav1.Tuple, error) {
 				time.Sleep(2 * shortTTL)
@@ -1121,7 +1119,7 @@ func TestReadUserTuple(t *testing.T) {
 	t.Run("markers_shorter_lived_than_entries_panic", func(t *testing.T) {
 		inner := mocks.NewMockOpenFGADatastore(gomock.NewController(t))
 		require.Panics(t, func() {
-			NewCachedDatastore(ctx, inner, storageTest.NewMapCache(), storage.NewInvalidationMarkers(ttl), 10, ttl, &singleflight.Group{}, &sync.WaitGroup{},
+			NewCachedDatastore(ctx, inner, storageTest.NewMapCache(), storage.NewInvalidationMarkers(ttl, 100), 10, ttl, &singleflight.Group{}, &sync.WaitGroup{},
 				WithCachedDatastoreJitterPercentage(10))
 		})
 	})
@@ -1164,7 +1162,7 @@ func TestCachedDatastoreHitsAgeTheEnclosingComputation(t *testing.T) {
 		require.NoError(t, err)
 		t.Cleanup(cache.Stop)
 		inner := mocks.NewMockOpenFGADatastore(gomock.NewController(t))
-		return NewCachedDatastore(ctx, inner, cache, storage.NewInvalidationMarkers(time.Hour), 10, time.Hour, &singleflight.Group{}, &sync.WaitGroup{}), inner, cache
+		return NewCachedDatastore(ctx, inner, cache, storage.NewInvalidationMarkers(time.Hour, 100), 10, time.Hour, &singleflight.Group{}, &sync.WaitGroup{}), inner, cache
 	}
 
 	t.Run("iterator_hit", func(t *testing.T) {
@@ -1222,7 +1220,7 @@ func TestDatastoreIteratorError(t *testing.T) {
 	ttl := 5 * time.Hour
 	sf := &singleflight.Group{}
 	wg := &sync.WaitGroup{}
-	invalidations := storage.NewInvalidationMarkers(ttl)
+	invalidations := storage.NewInvalidationMarkers(ttl, 100)
 	ds := NewCachedDatastore(ctx, mockDatastore, mockCache, invalidations, maxSize, ttl, sf, wg)
 
 	storeID := ulid.Make().String()
@@ -1310,7 +1308,7 @@ func TestCachedIterator(t *testing.T) {
 			operation:     "operation",
 			tuples:        make([]*openfgav1.Tuple, 0, maxCacheSize),
 			cacheKey:      cacheKey,
-			invalidations: storage.NewInvalidationMarkers(ttl),
+			invalidations: storage.NewInvalidationMarkers(ttl, 100),
 			initializedAt: time.Now(),
 			cache:         cache,
 			maxResultSize: maxCacheSize,
@@ -1352,7 +1350,7 @@ func TestCachedIterator(t *testing.T) {
 			operation:     "operation",
 			tuples:        make([]*openfgav1.Tuple, 0, maxCacheSize),
 			cacheKey:      cacheKey,
-			invalidations: storage.NewInvalidationMarkers(ttl),
+			invalidations: storage.NewInvalidationMarkers(ttl, 100),
 			initializedAt: time.Now(),
 			cache:         cache,
 			maxResultSize: maxCacheSize,
@@ -1388,7 +1386,7 @@ func TestCachedIterator(t *testing.T) {
 			operation:     "operation",
 			tuples:        make([]*openfgav1.Tuple, 0, maxCacheSize),
 			cacheKey:      cacheKey,
-			invalidations: storage.NewInvalidationMarkers(ttl),
+			invalidations: storage.NewInvalidationMarkers(ttl, 100),
 			initializedAt: time.Now(),
 			cache:         cache,
 			maxResultSize: maxCacheSize,
@@ -1446,7 +1444,7 @@ func TestCachedIterator(t *testing.T) {
 			operation:     "operation",
 			tuples:        make([]*openfgav1.Tuple, 0, maxCacheSize),
 			cacheKey:      cacheKey,
-			invalidations: storage.NewInvalidationMarkers(ttl),
+			invalidations: storage.NewInvalidationMarkers(ttl, 100),
 			initializedAt: time.Now(),
 			cache:         cache,
 			maxResultSize: maxCacheSize,
@@ -1485,7 +1483,7 @@ func TestCachedIterator(t *testing.T) {
 			operation:     "operation",
 			tuples:        make([]*openfgav1.Tuple, 0, maxCacheSize),
 			cacheKey:      cacheKey,
-			invalidations: storage.NewInvalidationMarkers(ttl),
+			invalidations: storage.NewInvalidationMarkers(ttl, 100),
 			initializedAt: time.Now(),
 			cache:         cache,
 			maxResultSize: maxCacheSize,
@@ -1549,7 +1547,7 @@ func TestCachedIterator(t *testing.T) {
 			operation:     "operation",
 			tuples:        make([]*openfgav1.Tuple, 0, maxCacheSize),
 			cacheKey:      cacheKey,
-			invalidations: storage.NewInvalidationMarkers(ttl),
+			invalidations: storage.NewInvalidationMarkers(ttl, 100),
 			initializedAt: time.Now(),
 			cache:         cache,
 			maxResultSize: maxCacheSize,
@@ -1594,7 +1592,7 @@ func TestCachedIterator(t *testing.T) {
 			operation:     "operation",
 			tuples:        make([]*openfgav1.Tuple, 0, maxCacheSize),
 			cacheKey:      cacheKey,
-			invalidations: storage.NewInvalidationMarkers(ttl),
+			invalidations: storage.NewInvalidationMarkers(ttl, 100),
 			initializedAt: time.Now(),
 			cache:         cache,
 			maxResultSize: maxCacheSize,
@@ -1659,8 +1657,7 @@ func TestCachedIterator(t *testing.T) {
 			operation:     "operation",
 			tuples:        make([]*openfgav1.Tuple, 0, maxCacheSize),
 			cacheKey:      cacheKey,
-			invalidations: storage.NewInvalidationMarkers(ttl),
-			guards:        []keys.Key{storage.InvalidIteratorCacheKey(store)},
+			invalidations: storage.NewInvalidationMarkers(ttl, 100),
 			initializedAt: time.Now(),
 			cache:         mockCache,
 			maxResultSize: maxCacheSize,
@@ -1710,7 +1707,7 @@ func TestCachedIterator(t *testing.T) {
 
 		t0 := time.Now().Add(-2 * time.Second)
 		t1 := time.Now().Add(-1 * time.Second) // write between guard and flush
-		markers := storage.NewInvalidationMarkers(ttl)
+		markers := storage.NewInvalidationMarkers(ttl, 100)
 
 		// interceptingCache injects the invalidation entry when flush() calls Set for
 		// the tuple cache key, simulating a concurrent write that races the flush.
@@ -1718,7 +1715,7 @@ func TestCachedIterator(t *testing.T) {
 			InMemoryCache: inner,
 			onSet: func(k keys.Key) {
 				if k == cacheKey {
-					markers.Invalidate(invalidEntityKey, t1)
+					markers.Invalidate(store, invalidEntityKey, t1)
 				}
 			},
 		}
@@ -1731,7 +1728,7 @@ func TestCachedIterator(t *testing.T) {
 			tuples:        make([]*openfgav1.Tuple, 0, maxCacheSize),
 			cacheKey:      cacheKey,
 			invalidations: markers,
-			guards:        []keys.Key{storage.InvalidIteratorCacheKey(store), invalidEntityKey},
+			guards:        []keys.Key{invalidEntityKey},
 			cache:         intercepting,
 			maxResultSize: maxCacheSize,
 			ttl:           ttl,
@@ -1761,7 +1758,7 @@ func TestCachedIterator(t *testing.T) {
 		require.Equal(t, t0, entry.LastModified)
 
 		// findInCache must reject it: entry.LastModified (t0) < invalidation (t1).
-		_, ok := findInCache(intercepting, markers, cacheKey, []keys.Key{storage.InvalidIteratorCacheKey(store), invalidEntityKey})
+		_, ok := findInCache(intercepting, markers, store, cacheKey, []keys.Key{invalidEntityKey})
 		require.False(t, ok, "stale cache entry should be invalidated because write occurred after query start")
 	})
 
@@ -1775,8 +1772,8 @@ func TestCachedIterator(t *testing.T) {
 
 		mockCache := mocks.NewMockInMemoryCache[any](mockController)
 
-		markers := storage.NewInvalidationMarkers(ttl)
-		markers.Invalidate(storage.InvalidIteratorCacheKey(store), time.Now().Add(1*time.Minute))
+		markers := storage.NewInvalidationMarkers(ttl, 100)
+		markers.InvalidateStore(store, time.Now().Add(1*time.Minute), storage.StoreInvalidationFirstRead)
 		mockCache.EXPECT().Get(cacheKey).Return(nil)
 
 		var wg sync.WaitGroup
@@ -1793,7 +1790,6 @@ func TestCachedIterator(t *testing.T) {
 			tuples:        make([]*openfgav1.Tuple, 0, maxCacheSize),
 			cacheKey:      cacheKey,
 			invalidations: markers,
-			guards:        []keys.Key{storage.InvalidIteratorCacheKey(store)},
 			cache:         mockCache,
 			maxResultSize: maxCacheSize,
 			ttl:           ttl,
@@ -1849,11 +1845,11 @@ func TestCachedIterator(t *testing.T) {
 			iter1 := &cachedIterator{
 				ctx:           ctx,
 				iter:          mockedIter1,
+				store:         store,
 				operation:     "operation",
 				tuples:        make([]*openfgav1.Tuple, 0, maxCacheSize),
 				cacheKey:      cacheKey,
-				invalidations: storage.NewInvalidationMarkers(ttl),
-				guards:        []keys.Key{storage.InvalidIteratorCacheKey(store)},
+				invalidations: storage.NewInvalidationMarkers(ttl, 100),
 				initializedAt: time.Now(),
 				cache:         mockCache,
 				maxResultSize: maxCacheSize,
@@ -1874,11 +1870,11 @@ func TestCachedIterator(t *testing.T) {
 			iter2 := &cachedIterator{
 				ctx:           ctx,
 				iter:          mockedIter2,
+				store:         store,
 				operation:     "operation",
 				tuples:        make([]*openfgav1.Tuple, 0, maxCacheSize),
 				cacheKey:      cacheKey,
-				invalidations: storage.NewInvalidationMarkers(ttl),
-				guards:        []keys.Key{storage.InvalidIteratorCacheKey(store)},
+				invalidations: storage.NewInvalidationMarkers(ttl, 100),
 				initializedAt: time.Now(),
 				cache:         mockCache,
 				maxResultSize: maxCacheSize,

@@ -39,6 +39,9 @@ const (
 
 	DefaultCacheControllerEnabled = false
 	DefaultCacheControllerTTL     = 10 * time.Second
+	// A marker with a UUID-sized object id takes about 140 B of heap, so the
+	// default bounds one store's markers of one result cache to about 14 MiB.
+	DefaultCacheControllerMaxMarkersPerStore = 100_000
 
 	DefaultCheckQueryCacheEnabled = false
 	DefaultCheckQueryCacheTTL     = 10 * time.Second
@@ -336,6 +339,9 @@ type SharedIteratorConfig struct {
 type CacheControllerConfig struct {
 	Enabled bool
 	TTL     time.Duration
+	// MaxMarkersPerStore bounds the per-entity invalidation markers a store
+	// holds; past it the store is invalidated as a whole instead.
+	MaxMarkersPerStore uint32
 }
 
 // DispatchThrottlingConfig defines configurations for dispatch throttling.
@@ -793,6 +799,9 @@ func (cfg *Config) verifyCacheConfig() error {
 	if cfg.CacheController.Enabled && cfg.CacheController.TTL <= 0 {
 		return errors.New("'cacheController.ttl' must be greater than zero")
 	}
+	if cfg.CacheController.MaxMarkersPerStore == 0 {
+		return errors.New("'cacheController.maxMarkersPerStore' must be greater than zero")
+	}
 	if cfg.CacheTTLJitterPercentage > 100 {
 		return errors.New("'cacheTTLJitterPercentage' must be between 0 and 100")
 	}
@@ -958,8 +967,9 @@ func DefaultConfig() *Config {
 			Limit:   DefaultSharedIteratorLimit,
 		},
 		CacheController: CacheControllerConfig{
-			Enabled: DefaultCacheControllerConfigEnabled,
-			TTL:     DefaultCacheControllerConfigTTL,
+			Enabled:            DefaultCacheControllerConfigEnabled,
+			TTL:                DefaultCacheControllerConfigTTL,
+			MaxMarkersPerStore: DefaultCacheControllerMaxMarkersPerStore,
 		},
 		CacheTTLJitterPercentage: DefaultCacheTTLJitterPercentage,
 		CheckDispatchThrottling: DispatchThrottlingConfig{

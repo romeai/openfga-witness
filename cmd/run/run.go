@@ -337,6 +337,8 @@ func NewRunCommand() *cobra.Command {
 
 	flags.Duration("cache-controller-ttl", defaultConfig.CacheController.TTL, "if cache controller is enabled, this is the minimum time interval for Check requests to trigger cache invalidation. List Objects requests may trigger invalidation even sooner if list objects iterator cache is enabled.")
 
+	flags.Uint32("cache-controller-max-markers-per-store", defaultConfig.CacheController.MaxMarkersPerStore, "the most per-entity invalidation markers the cache controller keeps for one store; past it every cache entry of the store is invalidated instead. Bounds the markers' memory, about 140 bytes each.")
+
 	flags.Uint32("cache-ttl-jitter-percentage", defaultConfig.CacheTTLJitterPercentage, "a percentage (0-100) of the base TTL added as random jitter to each cache entry's TTL, spreading out expirations to prevent thundering herd effects. For example, a value of 10 with a base TTL of 10s means each entry gets a TTL between 10s and 11s. Default is 0 (no jitter).")
 
 	// Unfortunately UintSlice/IntSlice does not work well when used as environment variable, we need to stick with string slice and convert back to integer
@@ -1111,6 +1113,7 @@ func (s *ServerContext) Run(ctx context.Context, config *serverconfig.Config) er
 		server.WithMaxConcurrentReadsForListUsers(config.MaxConcurrentReadsForListUsers),
 		server.WithCacheControllerEnabled(config.CacheController.Enabled),
 		server.WithCacheControllerTTL(config.CacheController.TTL),
+		server.WithCacheControllerMaxMarkersPerStore(config.CacheController.MaxMarkersPerStore),
 		server.WithCheckCacheLimit(config.CheckCache.Limit),
 		server.WithCheckIteratorCacheEnabled(config.CheckIteratorCache.Enabled),
 		server.WithCheckIteratorCacheMaxResults(config.CheckIteratorCache.MaxResults),

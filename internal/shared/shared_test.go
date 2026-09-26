@@ -41,8 +41,9 @@ func TestSharedDatastoreResources(t *testing.T) {
 
 	t.Run("with_cache", func(t *testing.T) {
 		settings := config.CacheSettings{
-			CheckCacheLimit:           1,
-			CheckIteratorCacheEnabled: true,
+			CheckCacheLimit:                   1,
+			CacheControllerMaxMarkersPerStore: 100,
+			CheckIteratorCacheEnabled:         true,
 		}
 
 		s, err := NewSharedDatastoreResources(sharedCtx, sharedSf, mockDatastore, settings)
@@ -59,6 +60,7 @@ func TestSharedDatastoreResources(t *testing.T) {
 	t.Run("markers_outlive_every_iterator_entry", func(t *testing.T) {
 		settings := config.CacheSettings{
 			CheckCacheLimit:                    1,
+			CacheControllerMaxMarkersPerStore:  100,
 			CheckIteratorCacheEnabled:          true,
 			CheckIteratorCacheTTL:              time.Hour,
 			ListObjectsIteratorCacheEnabled:    true,
@@ -78,11 +80,32 @@ func TestSharedDatastoreResources(t *testing.T) {
 		}
 	})
 
+	t.Run("markers_hold_the_configured_limit_per_store", func(t *testing.T) {
+		settings := config.CacheSettings{
+			CheckCacheLimit:                   1,
+			CacheControllerMaxMarkersPerStore: 1,
+			CheckIteratorCacheEnabled:         true,
+		}
+
+		s, err := NewSharedDatastoreResources(sharedCtx, sharedSf, mockDatastore, settings)
+		require.NoError(t, err)
+		t.Cleanup(s.Close)
+
+		observedAt := time.Now()
+		for _, markers := range []*storage.InvalidationMarkers{s.CheckCacheInvalidations, s.ShadowCheckCacheInvalidations} {
+			markers.Invalidate("store", storage.InvalidIteratorByObjectRelationCacheKey("store", "document:1", "viewer"), observedAt)
+			require.False(t, markers.Invalidated("store", observedAt.Add(-time.Second)))
+			markers.Invalidate("store", storage.InvalidIteratorByObjectRelationCacheKey("store", "document:2", "viewer"), observedAt)
+			require.True(t, markers.Invalidated("store", observedAt.Add(-time.Second)), "a second marker exceeds the limit of one")
+		}
+	})
+
 	t.Run("with_cache_controller", func(t *testing.T) {
 		settings := config.CacheSettings{
-			CheckCacheLimit:           1,
-			CheckIteratorCacheEnabled: true,
-			CacheControllerEnabled:    true,
+			CheckCacheLimit:                   1,
+			CacheControllerMaxMarkersPerStore: 100,
+			CheckIteratorCacheEnabled:         true,
+			CacheControllerEnabled:            true,
 		}
 
 		s, err := NewSharedDatastoreResources(sharedCtx, sharedSf, mockDatastore, settings)
@@ -97,8 +120,9 @@ func TestSharedDatastoreResources(t *testing.T) {
 
 	t.Run("with_shadow_cache", func(t *testing.T) {
 		settings := config.CacheSettings{
-			CheckCacheLimit:           1,
-			CheckIteratorCacheEnabled: true,
+			CheckCacheLimit:                   1,
+			CacheControllerMaxMarkersPerStore: 100,
+			CheckIteratorCacheEnabled:         true,
 		}
 
 		s, err := NewSharedDatastoreResources(sharedCtx, sharedSf, mockDatastore, settings)
@@ -111,9 +135,10 @@ func TestSharedDatastoreResources(t *testing.T) {
 
 	t.Run("with_shadow_cache_controller", func(t *testing.T) {
 		settings := config.CacheSettings{
-			CheckCacheLimit:           1,
-			CheckIteratorCacheEnabled: true,
-			CacheControllerEnabled:    true,
+			CheckCacheLimit:                   1,
+			CacheControllerMaxMarkersPerStore: 100,
+			CheckIteratorCacheEnabled:         true,
+			CacheControllerEnabled:            true,
 		}
 
 		s, err := NewSharedDatastoreResources(sharedCtx, sharedSf, mockDatastore, settings)
@@ -128,9 +153,10 @@ func TestSharedDatastoreResources(t *testing.T) {
 
 	t.Run("with_custom_logger", func(t *testing.T) {
 		settings := config.CacheSettings{
-			CheckCacheLimit:           1,
-			CheckIteratorCacheEnabled: true,
-			CacheControllerEnabled:    true,
+			CheckCacheLimit:                   1,
+			CacheControllerMaxMarkersPerStore: 100,
+			CheckIteratorCacheEnabled:         true,
+			CacheControllerEnabled:            true,
 		}
 
 		mockLogger := mockstorage.NewMockLogger(mockController)
@@ -145,9 +171,10 @@ func TestSharedDatastoreResources(t *testing.T) {
 
 	t.Run("with_custom_cache_controller", func(t *testing.T) {
 		settings := config.CacheSettings{
-			CheckCacheLimit:           1,
-			CheckIteratorCacheEnabled: true,
-			CacheControllerEnabled:    true, // Enables cache controller creation, but should not overwrite custom one
+			CheckCacheLimit:                   1,
+			CacheControllerMaxMarkersPerStore: 100,
+			CheckIteratorCacheEnabled:         true,
+			CacheControllerEnabled:            true, // Enables cache controller creation, but should not overwrite custom one
 		}
 
 		customController := mockstorage.NewMockCacheController(mockController)
@@ -162,9 +189,10 @@ func TestSharedDatastoreResources(t *testing.T) {
 
 	t.Run("with_custom_shadow_cache_controller", func(t *testing.T) {
 		settings := config.CacheSettings{
-			CheckCacheLimit:           1,
-			CheckIteratorCacheEnabled: true,
-			CacheControllerEnabled:    true, // Enables shadow controller creation, but should not overwrite custom one
+			CheckCacheLimit:                   1,
+			CacheControllerMaxMarkersPerStore: 100,
+			CheckIteratorCacheEnabled:         true,
+			CacheControllerEnabled:            true, // Enables shadow controller creation, but should not overwrite custom one
 		}
 
 		customShadowController := mockstorage.NewMockCacheController(mockController)

@@ -567,6 +567,11 @@ func TestVerifyConfig(t *testing.T) {
 			err := cfg.Verify()
 			require.NoError(t, err)
 		})
+		t.Run("max_markers_per_store_zero", func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.CacheController.MaxMarkersPerStore = 0
+			require.ErrorContains(t, cfg.Verify(), "'cacheController.maxMarkersPerStore' must be greater than zero")
+		})
 	})
 
 	t.Run("cache_ttl_jitter_percentage", func(t *testing.T) {

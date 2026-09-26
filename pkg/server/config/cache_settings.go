@@ -8,6 +8,7 @@ type CacheSettings struct {
 	CheckCacheLimit                    uint32
 	CacheControllerEnabled             bool
 	CacheControllerTTL                 time.Duration
+	CacheControllerMaxMarkersPerStore  uint32
 	CheckQueryCacheEnabled             bool
 	CheckQueryCacheTTL                 time.Duration
 	CheckIteratorCacheEnabled          bool
@@ -36,6 +37,7 @@ func NewDefaultCacheSettings() CacheSettings {
 		CheckCacheLimit:                    DefaultCheckCacheLimit,
 		CacheControllerEnabled:             DefaultCacheControllerEnabled,
 		CacheControllerTTL:                 DefaultCacheControllerTTL,
+		CacheControllerMaxMarkersPerStore:  DefaultCacheControllerMaxMarkersPerStore,
 		CheckQueryCacheEnabled:             DefaultCheckQueryCacheEnabled,
 		CheckQueryCacheTTL:                 DefaultCheckQueryCacheTTL,
 		CheckIteratorCacheEnabled:          DefaultCheckIteratorCacheEnabled,

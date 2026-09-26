@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/goleak"
 	"go.uber.org/zap"
@@ -103,15 +104,19 @@ type testController struct {
 }
 
 func newTestController(t *testing.T, ttl time.Duration) testController {
-	return newTestControllerWithCacheTTL(t, ttl, time.Hour)
+	return newTestControllerWithMarkers(t, ttl, time.Hour, 100_000)
 }
 
 func newTestControllerWithCacheTTL(t *testing.T, ttl, cacheTTL time.Duration) testController {
+	return newTestControllerWithMarkers(t, ttl, cacheTTL, 100_000)
+}
+
+func newTestControllerWithMarkers(t *testing.T, ttl, cacheTTL time.Duration, markerLimit int) testController {
 	t.Cleanup(func() {
 		goleak.VerifyNone(t)
 	})
 	ds := &changelogDatastore{}
-	markers := storage.NewInvalidationMarkers(cacheTTL)
+	markers := storage.NewInvalidationMarkers(cacheTTL, markerLimit)
 	c := NewCacheController(ds, markers, ttl, cacheTTL, cacheTTL).(*InMemoryCacheController)
 	return testController{InMemoryCacheController: c, ds: ds, markers: markers}
 }
@@ -119,11 +124,36 @@ func newTestControllerWithCacheTTL(t *testing.T, ttl, cacheTTL time.Duration) te
 // invalidates reports whether a cache entry stamped at stamp and guarded by
 // key is invalid.
 func (c testController) invalidates(key keys.Key, stamp time.Time) bool {
-	return c.markers.Invalidated(stamp, key)
+	return c.markers.Invalidated(storeID, stamp, key)
 }
 
-func storeKey() keys.Key {
-	return storage.InvalidIteratorCacheKey(storeID)
+// invalidatesStore reports whether the store-wide marker invalidates every
+// cache entry stamped at stamp.
+func (c testController) invalidatesStore(stamp time.Time) bool {
+	return c.markers.Invalidated(storeID, stamp)
+}
+
+// storeInvalidations reads the store-wide invalidation counter for reason
+// the way Prometheus scrapes it.
+func storeInvalidations(t *testing.T, reason storage.StoreInvalidationReason) float64 {
+	t.Helper()
+	families, err := prometheus.DefaultGatherer.Gather()
+	require.NoError(t, err)
+	for _, family := range families {
+		if family.GetName() != "openfga_cache_store_invalidation_count" {
+			continue
+		}
+		for _, metric := range family.GetMetric() {
+			labels := map[string]string{}
+			for _, label := range metric.GetLabel() {
+				labels[label.GetName()] = label.GetValue()
+			}
+			if labels["store_id"] == storeID && labels["reason"] == string(reason) {
+				return metric.GetCounter().GetValue()
+			}
+		}
+	}
+	return 0
 }
 
 func objectRelationKey(object string) keys.Key {
@@ -151,13 +181,15 @@ func TestInMemoryCacheController_DetermineInvalidationTime(t *testing.T) {
 	t.Run("first_call_waits_and_invalidates_the_whole_store", func(t *testing.T) {
 		c := newTestController(t, time.Hour)
 		c.ds.write(time.Now().Add(-time.Minute), "document:1", "user:anne")
+		firstReads := storeInvalidations(t, storage.StoreInvalidationFirstRead)
 
 		before := time.Now()
 		got := c.determine(t)
 
 		require.Equal(t, 1, c.ds.readCount())
 		require.False(t, got.Before(before), "entries cached before the first read must not be trusted")
-		require.True(t, c.invalidates(storeKey(), before))
+		require.True(t, c.invalidatesStore(before))
+		require.InDelta(t, firstReads+1, storeInvalidations(t, storage.StoreInvalidationFirstRead), 0)
 	})
 
 	t.Run("within_ttl_answers_without_reading", func(t *testing.T) {
@@ -184,7 +216,7 @@ func TestInMemoryCacheController_DetermineInvalidationTime(t *testing.T) {
 		require.True(t, got.After(written), "a Check result cached before the write must be invalid")
 		require.True(t, c.invalidates(objectRelationKey("document:1"), written))
 		require.True(t, c.invalidates(userObjectTypeKey("user:anne", "document"), written))
-		require.False(t, c.invalidates(storeKey(), written), "one change must not invalidate the whole store")
+		require.False(t, c.invalidatesStore(written), "one change must not invalidate the whole store")
 	})
 
 	t.Run("change_is_invalidated_from_when_it_was_observed", func(t *testing.T) {
@@ -221,7 +253,7 @@ func TestInMemoryCacheController_DetermineInvalidationTime(t *testing.T) {
 		time.Sleep(2 * ttl)
 
 		require.Equal(t, first, c.determine(t))
-		require.False(t, c.invalidates(storeKey(), first))
+		require.False(t, c.invalidatesStore(first))
 	})
 
 	t.Run("concurrent_callers_share_one_read", func(t *testing.T) {
@@ -279,12 +311,16 @@ func TestInMemoryCacheController_DetermineInvalidationTime(t *testing.T) {
 		c.determine(t)
 		time.Sleep(2 * ttl)
 		c.ds.err = errors.New("datastore unavailable")
+		errorsBefore := storeInvalidations(t, storage.StoreInvalidationError)
+		timeoutsBefore := storeInvalidations(t, storage.StoreInvalidationTimeout)
 
 		before := time.Now()
 		got := c.determine(t)
 
 		require.False(t, got.Before(before))
-		require.True(t, c.invalidates(storeKey(), before))
+		require.True(t, c.invalidatesStore(before))
+		require.InDelta(t, errorsBefore+1, storeInvalidations(t, storage.StoreInvalidationError), 0)
+		require.InDelta(t, timeoutsBefore, storeInvalidations(t, storage.StoreInvalidationTimeout), 0)
 	})
 
 	t.Run("read_timeout_invalidates_the_whole_store", func(t *testing.T) {
@@ -294,13 +330,17 @@ func TestInMemoryCacheController_DetermineInvalidationTime(t *testing.T) {
 		time.Sleep(2 * ttl)
 		c.ds.release = make(chan struct{})
 		t.Cleanup(func() { close(c.ds.release) })
+		errorsBefore := storeInvalidations(t, storage.StoreInvalidationError)
+		timeoutsBefore := storeInvalidations(t, storage.StoreInvalidationTimeout)
 
 		before := time.Now()
 		got := c.determine(t)
 
 		require.Less(t, time.Since(before), refreshTimeout+500*time.Millisecond)
 		require.False(t, got.Before(before))
-		require.True(t, c.invalidates(storeKey(), before))
+		require.True(t, c.invalidatesStore(before))
+		require.InDelta(t, timeoutsBefore+1, storeInvalidations(t, storage.StoreInvalidationTimeout), 0)
+		require.InDelta(t, errorsBefore, storeInvalidations(t, storage.StoreInvalidationError), 0)
 	})
 
 	t.Run("expired_state_invalidates_the_whole_store", func(t *testing.T) {
@@ -314,7 +354,7 @@ func TestInMemoryCacheController_DetermineInvalidationTime(t *testing.T) {
 		got := c.determine(t)
 
 		require.False(t, got.Before(before))
-		require.True(t, c.invalidates(storeKey(), before))
+		require.True(t, c.invalidatesStore(before))
 	})
 
 	t.Run("expired_states_are_swept", func(t *testing.T) {
@@ -348,7 +388,7 @@ func TestInMemoryCacheController_IncrementalChangelog(t *testing.T) {
 		got := c.determine(t)
 
 		require.True(t, got.After(cachedBeforeObserved))
-		require.False(t, c.invalidates(storeKey(), cachedBeforeObserved), "changes within the page budget must not invalidate the whole store")
+		require.False(t, c.invalidatesStore(cachedBeforeObserved), "changes within the page budget must not invalidate the whole store")
 		for i := range writes {
 			require.True(t, c.invalidates(objectRelationKey("document:"+strconv.Itoa(i)), cachedBeforeObserved), "document:%d", i)
 		}
@@ -401,7 +441,7 @@ func TestInMemoryCacheController_IncrementalChangelog(t *testing.T) {
 
 		require.True(t, got.After(cachedBeforeObserved))
 		require.True(t, c.invalidates(objectRelationKey("document:2"), cachedBeforeObserved))
-		require.False(t, c.invalidates(storeKey(), cachedBeforeObserved))
+		require.False(t, c.invalidatesStore(cachedBeforeObserved))
 	})
 
 	t.Run("exhausted_page_budget_invalidates_the_whole_store_and_is_logged", func(t *testing.T) {
@@ -410,6 +450,7 @@ func TestInMemoryCacheController_IncrementalChangelog(t *testing.T) {
 		c.logger = &logger.ZapLogger{Logger: zap.New(core)}
 		c.determine(t)
 		time.Sleep(2 * ttl)
+		budgetsBefore := storeInvalidations(t, storage.StoreInvalidationBudget)
 
 		written := time.Now()
 		for i := range maxChangelogPages*changelogPageSize + 1 {
@@ -419,9 +460,29 @@ func TestInMemoryCacheController_IncrementalChangelog(t *testing.T) {
 		got := c.determine(t)
 
 		require.True(t, got.After(cachedBeforeObserved))
-		require.True(t, c.invalidates(storeKey(), cachedBeforeObserved))
+		require.True(t, c.invalidatesStore(cachedBeforeObserved))
 		require.Equal(t, 1, logs.FilterMessageSnippet("page budget").Len())
+		require.InDelta(t, budgetsBefore+1, storeInvalidations(t, storage.StoreInvalidationBudget), 0)
 		require.Equal(t, 1+maxChangelogPages, c.ds.readCount())
+	})
+
+	t.Run("changes_past_the_marker_limit_invalidate_the_whole_store", func(t *testing.T) {
+		const markerLimit = 10
+		c := newTestControllerWithMarkers(t, ttl, time.Hour, markerLimit)
+		c.determine(t)
+		time.Sleep(2 * ttl)
+		capsBefore := storeInvalidations(t, storage.StoreInvalidationCap)
+
+		written := time.Now()
+		for i := range markerLimit {
+			c.ds.write(written.Add(time.Duration(i)*time.Microsecond), "document:"+strconv.Itoa(i), "user:anne")
+		}
+		cachedBeforeObserved := time.Now()
+		got := c.determine(t)
+
+		require.True(t, c.invalidatesStore(cachedBeforeObserved), "%d changes write more than %d markers", markerLimit, markerLimit)
+		require.False(t, c.invalidatesStore(got), "the store is invalidated from when the changes were observed")
+		require.InDelta(t, capsBefore+1, storeInvalidations(t, storage.StoreInvalidationCap), 0)
 	})
 
 	t.Run("repeated_continuation_token_invalidates_the_whole_store", func(t *testing.T) {
@@ -436,6 +497,6 @@ func TestInMemoryCacheController_IncrementalChangelog(t *testing.T) {
 		cachedBeforeObserved := time.Now()
 		c.determine(t)
 
-		require.True(t, c.invalidates(storeKey(), cachedBeforeObserved))
+		require.True(t, c.invalidatesStore(cachedBeforeObserved))
 	})
 }

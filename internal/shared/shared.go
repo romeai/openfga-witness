@@ -114,7 +114,7 @@ func NewSharedDatastoreResources(
 	// Markers outlive every iterator entry of either iterator cache.
 	markerTTL := storage.MaxJitteredTTL(max(settings.CheckIteratorCacheTTL, settings.ListObjectsIteratorCacheTTL), settings.CacheTTLJitterPercentage)
 	if s.CheckCache != nil {
-		s.CheckCacheInvalidations = storage.NewInvalidationMarkers(markerTTL)
+		s.CheckCacheInvalidations = storage.NewInvalidationMarkers(markerTTL, int(settings.CacheControllerMaxMarkersPerStore))
 	}
 
 	// Only create a cache controller if it wasn't already set via opts.
@@ -143,7 +143,7 @@ func NewSharedDatastoreResources(
 		if err != nil {
 			return nil, err
 		}
-		s.ShadowCheckCacheInvalidations = storage.NewInvalidationMarkers(markerTTL)
+		s.ShadowCheckCacheInvalidations = storage.NewInvalidationMarkers(markerTTL, int(settings.CacheControllerMaxMarkersPerStore))
 	}
 
 	// Only create a shadow cache controller if it wasn't already set via opts.

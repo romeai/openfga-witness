@@ -501,6 +501,14 @@ func WithCacheControllerTTL(ttl time.Duration) OpenFGAServiceV1Option {
 	}
 }
 
+// WithCacheControllerMaxMarkersPerStore bounds the per-entity invalidation
+// markers a store holds; past it the store is invalidated as a whole instead.
+func WithCacheControllerMaxMarkersPerStore(limit uint32) OpenFGAServiceV1Option {
+	return func(s *Server) {
+		s.cacheSettings.CacheControllerMaxMarkersPerStore = limit
+	}
+}
+
 // WithCheckQueryCacheTTL sets the TTL of cached checks and list objects partial results
 // Needs WithCheckQueryCacheEnabled set to true.
 func WithCheckQueryCacheTTL(ttl time.Duration) OpenFGAServiceV1Option {
